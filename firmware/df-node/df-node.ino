@@ -142,20 +142,25 @@ void setup() {
   ELECHOUSE_cc1101.setMHZ(TARGET_FREQ_MHZ);
   ELECHOUSE_cc1101.SetRx();
   nodeVer = ELECHOUSE_cc1101.SpiReadStatus(0x31);   // VERSION: proves SPI to RF Pack
+  uint8_t ccPart = ELECHOUSE_cc1101.SpiReadStatus(0x30);
+  Serial.printf("# CC1101 pins SCK=%d MISO=%d MOSI=%d CS=%d GDO0=%d\n",
+                CC_SCK, CC_MISO, CC_MOSI, CC_CS, CC_GDO0);
+  Serial.printf("# CC1101 PARTNUM=0x%02X VERSION=0x%02X (expect 0x00 / 0x14)\n",
+                ccPart, nodeVer);
   pinMode(CC_GDO0, INPUT);
   attachInterrupt(digitalPinToInterrupt(CC_GDO0), onEdge, CHANGE);
 
-  // ESP-NOW on the collector's channel.
+  // ESP-NOW — matches the proven Beat-Commander linkInit() for this board:
+  // set channel BEFORE esp_now_init, no set_ps, no explicit ifidx.
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect();                                // don't associate to any AP
-  esp_wifi_set_ps(WIFI_PS_NONE);                    // no power save -> no missed slots
-  espnowOk = (esp_now_init() == ESP_OK);
-  if (!espnowOk) Serial.println("esp_now init failed");
-  esp_now_register_send_cb(onDfSent);
+  WiFi.disconnect();
   esp_wifi_set_channel(COLLECTOR_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  espnowOk = (esp_now_init() == ESP_OK);
+  if (!espnowOk) Serial.println("# esp_now init failed");
+  esp_now_register_send_cb(onDfSent);
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BCAST, 6);
-  peer.channel = COLLECTOR_CHANNEL; peer.ifidx = WIFI_IF_STA; peer.encrypt = false;
+  peer.channel = COLLECTOR_CHANNEL; peer.encrypt = false;
   esp_now_add_peer(&peer);
 
   Serial.printf("{\"t\":\"nodeboot\",\"node\":\"%c\",\"freq\":%.2f,\"ch\":%d,"
