@@ -120,6 +120,12 @@ void setup() {
 #endif
   Serial.begin(NODE_SERIAL_BAUD);
 
+#if HAS_SN74_BUS
+  // Deassert rival chip-selects so the SN74 routes the CC1101's MISO to us.
+  pinMode(BUS_NRF_CS, OUTPUT); digitalWrite(BUS_NRF_CS, HIGH);
+  pinMode(BUS_SD_CS,  OUTPUT); digitalWrite(BUS_SD_CS,  HIGH);
+#endif
+
   // Radio: single CC1101 in async OOK RX on the target frequency.
   ELECHOUSE_cc1101.addSpiPin(CC_SCK, CC_MISO, CC_MOSI, CC_CS, 0);
   ELECHOUSE_cc1101.setModul(0);
@@ -135,15 +141,14 @@ void setup() {
 
   // ESP-NOW on the collector's channel.
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect();                                // don't associate to any AP
   esp_wifi_set_ps(WIFI_PS_NONE);                    // no power save -> no missed slots
-  esp_wifi_set_promiscuous(true);
-  esp_wifi_set_channel(COLLECTOR_CHANNEL, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_promiscuous(false);
   if (esp_now_init() != ESP_OK) Serial.println("esp_now init failed");
   esp_now_register_send_cb(onDfSent);
+  esp_wifi_set_channel(COLLECTOR_CHANNEL, WIFI_SECOND_CHAN_NONE);
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BCAST, 6);
-  peer.channel = 0; peer.encrypt = false;           // 0 = use current channel
+  peer.channel = COLLECTOR_CHANNEL; peer.ifidx = WIFI_IF_STA; peer.encrypt = false;
   esp_now_add_peer(&peer);
 
   Serial.printf("{\"t\":\"nodeboot\",\"node\":\"%c\",\"freq\":%.2f,\"ch\":%d,\"tx\":false}\n",

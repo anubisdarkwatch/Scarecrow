@@ -19,6 +19,12 @@
   #define CC_MOSI  6
   #define CC_CS    2
   #define CC_GDO0  3
+  // RF Pack S3 has an SN74 that arbitrates the shared MISO between CC1101 and
+  // nRF24 by chip-select. Hold the rivals HIGH so the CC1101 owns MISO, or its
+  // registers read back as zero (dead radio).
+  #define HAS_SN74_BUS 1
+  #define BUS_NRF_CS   8
+  #define BUS_SD_CS    7
 #elif BOARD == BOARD_GENERIC_CC1101
   // Standard ESP32 VSPI wiring — change these to match how you wired the
   // Rabbit Labs board's CC1101 SPI header (SCK/MISO/MOSI/CSN) + GDO0.
@@ -29,6 +35,7 @@
   #define CC_MOSI  23
   #define CC_CS    5
   #define CC_GDO0  4
+  #define HAS_SN74_BUS 0
 #endif
 
 // ---- Identity & link -------------------------------------------------------
