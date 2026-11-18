@@ -27,6 +27,12 @@ uint32_t seq = 0, lastBeacon = 0;
 int16_t  lastRssi = -120;
 uint16_t lastTe = 0;
 uint32_t burstCount = 0;
+uint8_t  nodeVer = 0;                 // CC1101 VERSION reg (0x14≈20 = SPI alive)
+volatile uint32_t txOk = 0, txFail = 0;
+
+void onDfSent(const wifi_tx_info_t *info, esp_now_send_status_t st) {
+  if (st == ESP_NOW_SEND_SUCCESS) txOk++; else txFail++;
+}
 
 #if USE_M5
 M5Canvas cv(&M5.Display);
@@ -66,7 +72,11 @@ void drawScreen() {
   char ft[22]; snprintf(ft, sizeof(ft), "%.2f ch%d", TARGET_FREQ_MHZ, COLLECTOR_CHANNEL);
   cv.drawString(ft, W - 6, H - 20);
   cv.setTextDatum(bottom_left);
-  char bl[22]; snprintf(bl, sizeof(bl), "bursts %lu  bat %d%%", (unsigned long)burstCount, M5.Power.getBatteryLevel());
+  // diagnostics: CC1101 version (SPI alive?) + ESP-NOW tx ok/fail
+  uint16_t vcol = (nodeVer > 0 && nodeVer < 255) ? C_OK : C_GOLD;
+  cv.setTextColor(vcol, C_BG);
+  char bl[26]; snprintf(bl, sizeof(bl), "v%u tx%lu/%lu b%d%%",
+    nodeVer, (unsigned long)txOk, (unsigned long)txFail, M5.Power.getBatteryLevel());
   cv.drawString(bl, 6, H - 6);
   cv.pushSprite(0, 0);
 }
@@ -119,18 +129,21 @@ void setup() {
   ELECHOUSE_cc1101.setRxBW(TARGET_RXBW_KHZ);
   ELECHOUSE_cc1101.setMHZ(TARGET_FREQ_MHZ);
   ELECHOUSE_cc1101.SetRx();
+  nodeVer = ELECHOUSE_cc1101.SpiReadStatus(0x31);   // VERSION: proves SPI to RF Pack
   pinMode(CC_GDO0, INPUT);
   attachInterrupt(digitalPinToInterrupt(CC_GDO0), onEdge, CHANGE);
 
   // ESP-NOW on the collector's channel.
   WiFi.mode(WIFI_STA);
+  esp_wifi_set_ps(WIFI_PS_NONE);                    // no power save -> no missed slots
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(COLLECTOR_CHANNEL, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
   if (esp_now_init() != ESP_OK) Serial.println("esp_now init failed");
+  esp_now_register_send_cb(onDfSent);
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BCAST, 6);
-  peer.channel = COLLECTOR_CHANNEL; peer.encrypt = false;
+  peer.channel = 0; peer.encrypt = false;           // 0 = use current channel
   esp_now_add_peer(&peer);
 
   Serial.printf("{\"t\":\"nodeboot\",\"node\":\"%c\",\"freq\":%.2f,\"ch\":%d,\"tx\":false}\n",

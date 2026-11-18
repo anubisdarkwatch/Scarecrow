@@ -401,7 +401,11 @@ es.onmessage=ev=>handle(ev.data);
 )HTML";
 
 inline void webSetup() {
+#if USE_DF
+  WiFi.mode(WIFI_AP_STA);            // STA iface present for reliable ESP-NOW rx
+#else
   WiFi.mode(WIFI_AP);
+#endif
   WiFi.softAP(AP_SSID, AP_PASS, AP_CHANNEL);
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
