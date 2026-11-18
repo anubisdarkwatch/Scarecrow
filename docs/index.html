@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scarecrow Flasher</title>
+<style>
+  :root{--bg:#0a0b0f;--panel:#141722;--ink:#e6e9f0;--dim:#7c8296;--line:#232838;--acc:#9b8cff;--ok:#3ddc97}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);
+    font:15px/1.6 ui-monospace,Menlo,Consolas,monospace;display:flex;justify-content:center}
+  main{max-width:640px;padding:48px 22px}
+  h1{letter-spacing:.18em;font-size:22px;margin:0 0 4px}
+  .sub{color:var(--dim);margin:0 0 28px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:16px 0}
+  .card h2{font-size:12px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase;margin:0 0 10px}
+  ol{margin:0;padding-left:20px}li{margin:6px 0}
+  .btnrow{display:flex;justify-content:center;margin:26px 0}
+  esp-web-install-button{--esp-tools-button-color:#0a0b0f;--esp-tools-button-text-color:#9b8cff}
+  button.alt{background:var(--acc);color:#0a0b0f;border:0;border-radius:8px;padding:12px 20px;
+    font:inherit;font-weight:700;letter-spacing:.06em;cursor:pointer}
+  .warn{color:var(--dim);font-size:13px}.tx{color:var(--ok)}
+  a{color:var(--acc)}code{color:var(--acc)}
+  .note{border-left:3px solid var(--acc);padding-left:12px}
+</style>
+</head>
+<body>
+<main>
+  <h1>SCARECROW</h1>
+  <p class="sub">Receive-only sub-GHz sensor &middot; Evil Crow RF V2 &middot; v0.2.0</p>
+
+  <div class="card note">
+    <span class="tx">This firmware has no transmit path.</span> The two CC1101
+    radios are only ever placed in RX/IDLE. WiFi is used solely to serve a
+    read-only dashboard.
+  </div>
+
+  <div class="btnrow">
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate" class="alt">⬡ FLASH VIA BROWSER</button>
+      <span slot="unsupported">Use Chrome, Edge, or Opera on desktop (Web Serial).</span>
+      <span slot="not-allowed">Serial access was blocked — reload and allow it.</span>
+    </esp-web-install-button>
+  </div>
+
+  <div class="card">
+    <h2>Flash</h2>
+    <ol>
+      <li>Open this page in <b>Chrome / Edge / Opera</b> on a desktop.</li>
+      <li>Plug the Evil Crow RF V2 in by USB.</li>
+      <li>Click <b>Flash via browser</b>, pick the serial port, confirm erase.</li>
+      <li>When done: join WiFi <code>Scarecrow</code> / <code>watchonly</code> →
+          browse to <code>http://192.168.4.1</code>.</li>
+    </ol>
+    <p class="warn">Can't enter download mode? Hold <b>BOOT</b>, tap <b>EN/RST</b>,
+       release BOOT, then flash.</p>
+  </div>
+
+  <div class="card">
+    <h2>Prefer esptool?</h2>
+    <p>Single merged image, flash at offset 0:</p>
+    <p><code>esptool.py -c esp32 -p &lt;PORT&gt; write_flash 0x0 scarecrow.merged.bin</code></p>
+    <p class="warn">The separate parts are also here if you want them:
+       <code>scarecrow.bootloader.bin</code>@0x1000,
+       <code>scarecrow.partitions.bin</code>@0x8000,
+       <code>boot_app0.bin</code>@0xe000,
+       <code>scarecrow.app.bin</code>@0x10000.</p>
+  </div>
+
+  <p class="warn">Built from source for ESP32-PICO-D4, DIO, 4MB, huge_app
+     partition. API-verified against the dual-module ELECHOUSE fork; not yet
+     hardware-tested on a live V2.</p>
+
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+</main>
+</body>
+</html>

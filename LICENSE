@@ -1,0 +1,27 @@
+Scarecrow — receive-only sub-GHz sensor firmware for the Evil Crow RF V2
+Copyright (c) 2026 Anubis Darkwatch
+
+This work (the Scarecrow firmware and documentation) is licensed under the
+Creative Commons Attribution 4.0 International License (CC BY 4.0), matching the
+upstream Evil Crow RF V2 project.
+
+You are free to share and adapt this work for any purpose, even commercially,
+provided you give appropriate credit, link to the license, and indicate if
+changes were made.
+
+Full license text: https://creativecommons.org/licenses/by/4.0/legalcode
+Summary:          https://creativecommons.org/licenses/by/4.0/
+
+SPDX-License-Identifier: CC-BY-4.0
+
+----------------------------------------------------------------------------
+Vendored third-party code is NOT covered by the above and retains its own
+license:
+
+- firmware/libraries/ELECHOUSE_CC1101_SRC_DRV/
+    Dual-module CC1101 driver from the Evil Crow RF V2 project
+    (https://github.com/joelsernamoreno/EvilCrowRF-V2), itself derived from
+    ELECHOUSE's CC1101 library. Retains its original upstream license.
+
+The ESP32Async AsyncTCP and ESPAsyncWebServer libraries are fetched at build
+time and are licensed separately by their authors (LGPL-3.0).

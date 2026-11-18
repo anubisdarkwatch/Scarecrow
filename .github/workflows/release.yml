@@ -1,0 +1,83 @@
+name: build-and-release
+
+# Builds the firmware, publishes the web flasher to GitHub Pages, and attaches
+# the binaries to a Release. Runs on every v* tag (and on demand).
+#
+# One-time setup in the repo: Settings -> Pages -> Source = "GitHub Actions".
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write     # create releases
+  pages: write        # deploy Pages
+  id-token: write     # Pages OIDC
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 core
+        run: |
+          arduino-cli core update-index \
+            --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32 \
+            --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+
+      - name: Fetch async libraries (maintained ESP32Async forks)
+        run: |
+          mkdir -p libs
+          git clone --depth 1 https://github.com/ESP32Async/AsyncTCP          libs/AsyncTCP
+          git clone --depth 1 https://github.com/ESP32Async/ESPAsyncWebServer libs/ESPAsyncWebServer
+
+      - name: Compile
+        run: |
+          arduino-cli compile \
+            -b esp32:esp32:esp32:PartitionScheme=huge_app,FlashSize=4M \
+            --libraries firmware/libraries,libs \
+            --output-dir build \
+            firmware/scarecrow
+
+      - name: Stage flasher binaries into docs/
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          cp build/scarecrow.ino.merged.bin      docs/scarecrow.merged.bin
+          cp build/scarecrow.ino.bin             docs/scarecrow.app.bin
+          cp build/scarecrow.ino.bootloader.bin  docs/scarecrow.bootloader.bin
+          cp build/scarecrow.ino.partitions.bin  docs/scarecrow.partitions.bin
+          # stamp the flasher manifest version from the tag (if tagged)
+          if [ -n "$VER" ] && [ "$VER" != "$GITHUB_REF_NAME" ]; then
+            python3 -c "import json;p='docs/manifest.json';m=json.load(open(p));m['version']='$VER';json.dump(m,open(p,'w'),indent=2)"
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Attach binaries to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            docs/scarecrow.merged.bin
+            docs/scarecrow.app.bin
+            docs/scarecrow.bootloader.bin
+            docs/scarecrow.partitions.bin
+
+  deploy-pages:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

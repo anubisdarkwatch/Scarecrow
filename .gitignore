@@ -1,0 +1,15 @@
+# build output
+/build/
+/out/
+*.elf
+*.map
+*.o
+
+# arduino-cli / toolchain caches
+.arduino15/
+libs/
+
+# editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
