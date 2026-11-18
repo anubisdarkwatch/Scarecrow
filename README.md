@@ -114,3 +114,21 @@ Firmware and docs: **CC BY 4.0** (matches upstream Evil Crow). Vendored code in
 
 > Scarecrow is for lawful monitoring, RF research, and spectrum hygiene on bands
 > you're permitted to receive. You are responsible for complying with local law.
+
+## Direction finding (experimental — `df` branch)
+
+Multi-node RSSI localisation over **ESP-NOW**. The Evil Crow is the **anchor +
+collector** (runs the web UI, hosts the `LOCATE` view); one or more **rover
+nodes** (any ESP32/ESP32-S3 + a single CC1101) park on the target frequency and
+broadcast their RSSI + burst `te` to the anchor. Hottest node = nearest the
+source. No TDOA (CC1101 can't) — this is coarse RSSI ranking, not a pinpoint.
+
+- **Node firmware:** `firmware/df-node/` — set your board in `node_config.h`
+  (`BOARD_STICKS3_RFPACK` with verified pins, or `BOARD_GENERIC_CC1101` for a
+  Rabbit Labs Flux Capacitor / Slim-Line / bare EByte CC1101 you wire yourself),
+  a unique `NODE_ID`, and the channel to match the anchor's `AP_CHANNEL`.
+- **Collector:** enabled by `USE_DF` in `firmware/scarecrow/config.h`; receives
+  ESP-NOW reports and ranks nodes in the `LOCATE` tab. The Evil Crow is node `0`.
+- **Caveats:** ESP-NOW peers must share the anchor's WiFi channel. Amplified
+  nodes (Flux Capacitor LNA) read systematically hotter — calibrate a per-node
+  offset before trusting the ranking across mixed radios; a matched pair is cleanest.

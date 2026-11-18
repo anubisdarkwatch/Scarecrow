@@ -90,3 +90,9 @@ static const int   SCAN_PLAN_LEN = sizeof(SCAN_PLAN) / sizeof(SCAN_PLAN[0]);
 #define AP_PASS        "watchonly"    // >=8 chars; change it
 #define AP_CHANNEL     6
 #define UI_MAX_LOG     200            // rows kept in the browser log
+
+// ---- Direction finding (ESP-NOW rover nodes) ----
+// Receive RSSI/burst reports from Scarecrow DF rover nodes and rank them in the
+// LOCATE view (hottest node = nearest the source). Rovers must use the same
+// WiFi channel as AP_CHANNEL above. Still receive-only — ESP-NOW is WiFi.
+#define USE_DF         1              // 0 to drop DF collector entirely

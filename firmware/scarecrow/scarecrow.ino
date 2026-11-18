@@ -18,6 +18,11 @@
   File logFile;
 #endif
 #include "webui.h"   // read-only WiFi dashboard (stubs out when USE_WEB=0)
+#if USE_DF
+  #include <esp_now.h>
+  #include <esp_wifi.h>
+  #include "df_packet.h"
+#endif
 
 // ------- module index helpers (dual-module fork uses setModul 0/1) ----------
 #define MOD_A 0   // CC1 — scanner
@@ -31,6 +36,9 @@
 uint32_t lastSelfTest = 0;
 uint32_t lastFox = 0;
 float    watchFreq = WATCH_FREQ_MHZ;   // Module B park freq — runtime-tunable
+#if USE_DF
+int16_t  lastFoxRssi = -120;           // EC's own watch RSSI, shared with DF
+#endif
 void moduleSelfTest(byte modul, const char* name);   // defined after emit()
 void setWatchFreq(float f);                          // defined after emit()
 float getWatchFreq() { return watchFreq; }
@@ -130,6 +138,9 @@ void foxTick() {
     delayMicroseconds(200);
   }
   ELECHOUSE_cc1101.setModul(MOD_A);
+#if USE_DF
+  lastFoxRssi = fr;                            // feed EC's own node reading
+#endif
   webPush(String("{\"t\":\"fox\",\"mhz\":") + String(watchFreq, 2)
         + ",\"rssi\":" + fr + "}");            // UI-only live stream
 }
@@ -251,6 +262,61 @@ void sigForget(int id) {
   webPush(String("{\"t\":\"sigdel\",\"id\":")+id+"}");
 }
 
+// ===========================================================================
+//  DIRECTION FINDING — collector for ESP-NOW rover nodes
+//  Rovers broadcast {node, rssi, te} on the target freq. We rank them; hottest
+//  node is nearest the source. The Evil Crow itself is node "0" (the anchor),
+//  reported from its own Module-B watch RSSI.
+// ===========================================================================
+#if USE_DF
+struct DfNode { bool used; char id; int16_t rssi; uint16_t te; uint32_t lastMs; uint32_t seq; bool dirty; };
+DfNode dfNodes[8];
+uint32_t lastDfTick = 0;
+portMUX_TYPE dfMux = portMUX_INITIALIZER_UNLOCKED;
+
+void onDfRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  if (len < (int)sizeof(DfPacket)) return;
+  DfPacket p; memcpy(&p, data, sizeof(p));
+  if (p.magic != DF_MAGIC) return;
+  portENTER_CRITICAL(&dfMux);
+  int idx = -1;
+  for (int i = 0; i < 8; i++) if (dfNodes[i].used && dfNodes[i].id == p.node) { idx = i; break; }
+  if (idx < 0) for (int i = 0; i < 8; i++) if (!dfNodes[i].used) { dfNodes[i].used = true; dfNodes[i].id = p.node; idx = i; break; }
+  if (idx >= 0) {
+    dfNodes[idx].rssi = p.rssi;
+    if (p.kind == DF_KIND_BURST) dfNodes[idx].te = p.te;
+    dfNodes[idx].lastMs = millis(); dfNodes[idx].seq = p.seq; dfNodes[idx].dirty = true;
+  }
+  portEXIT_CRITICAL(&dfMux);
+}
+
+String buildNodesJson() {
+  String s = String("{\"target\":") + String(watchFreq, 2)
+           + ",\"nodes\":[{\"id\":\"0\",\"self\":true,\"rssi\":" + lastFoxRssi + ",\"age\":0}";
+  for (int i = 0; i < 8; i++) if (dfNodes[i].used)
+    s += ",{\"id\":\"" + String(dfNodes[i].id) + "\",\"rssi\":" + dfNodes[i].rssi
+       + ",\"te\":" + dfNodes[i].te + ",\"age\":" + ((millis() - dfNodes[i].lastMs) / 1000) + "}";
+  s += "]}"; return s;
+}
+
+void dfTick() {
+  if (millis() - lastDfTick < 250) return;
+  lastDfTick = millis();
+  webPush(String("{\"t\":\"node\",\"id\":\"0\",\"self\":true,\"rssi\":") + lastFoxRssi + ",\"age\":0}");
+  for (int i = 0; i < 8; i++) {
+    bool d = false; int16_t rssi = 0; uint16_t te = 0; uint32_t age = 0; char id = 0;
+    portENTER_CRITICAL(&dfMux);
+    if (dfNodes[i].used && dfNodes[i].dirty) {
+      d = true; id = dfNodes[i].id; rssi = dfNodes[i].rssi; te = dfNodes[i].te;
+      age = (millis() - dfNodes[i].lastMs) / 1000; dfNodes[i].dirty = false;
+    }
+    portEXIT_CRITICAL(&dfMux);
+    if (d) webPush(String("{\"t\":\"node\",\"id\":\"") + id + "\",\"rssi\":" + rssi
+                 + ",\"te\":" + te + ",\"age\":" + age + "}");
+  }
+}
+#endif
+
 // ---------------------------------------------------------------------------
 //  Radio bring-up — RX ONLY
 // ---------------------------------------------------------------------------
@@ -299,6 +365,9 @@ void setup() {
   initScanner();
   initListener();
   webSetup();
+#if USE_DF
+  if (esp_now_init() == ESP_OK) esp_now_register_recv_cb(onDfRecv);  // AP channel = AP_CHANNEL
+#endif
 
   for (int i = 0; i < SCAN_PLAN_LEN; i++) { floorDb[i] = -110; lastRssi[i] = -127; busyAccum[i] = 0; }
 
@@ -306,7 +375,7 @@ void setup() {
   moduleSelfTest(MOD_B, "B");
   ELECHOUSE_cc1101.setModul(MOD_A);   // leave scanner selected
 
-  emit(String("{\"t\":\"boot\",\"fw\":\"scarecrow-0.8\",\"tx\":false,")
+  emit(String("{\"t\":\"boot\",\"fw\":\"scarecrow-0.9-df\",\"tx\":false,")
      + "\"channels\":" + SCAN_PLAN_LEN
      + ",\"watch_mhz\":" + String(watchFreq, 2)
      + ",\"ap_ip\":\"" + webApIp() + "\""
@@ -459,6 +528,9 @@ void loop() {
   foxTick();        // fast RSSI on the fox freq -> UI
   maybeReport();
   if (sigsDirty && millis() - lastSigSave > 3000) sigsSave();  // debounced persist
+#if USE_DF
+  dfTick();         // rank rover nodes -> LOCATE view
+#endif
 
   if (millis() - lastSelfTest > 5000) {   // module health every 5s
     lastSelfTest = millis();

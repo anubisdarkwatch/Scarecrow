@@ -1,6 +1,6 @@
 {
   "name": "Scarecrow (Evil Crow RF V2, receive-only)",
-  "version": "0.8.0",
+  "version": "0.9.0-df",
   "new_install_prompt_erase": true,
   "builds": [
     {

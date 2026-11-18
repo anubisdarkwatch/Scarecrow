@@ -16,6 +16,9 @@ extern float  getWatchFreq();
 extern String buildSigsJson();      // signature library
 extern void   sigLabel(int, String);
 extern void   sigForget(int);
+#if USE_DF
+extern String buildNodesJson();     // direction-finding node table
+#endif
 
 static AsyncWebServer  server(80);
 static AsyncEventSource events("/events");
@@ -128,6 +131,10 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
  background:var(--gold);color:#06070b;font-weight:700;padding:11px 18px;border-radius:11px;
  opacity:0;transition:.25s;z-index:9;pointer-events:none;letter-spacing:.04em;box-shadow:var(--glow)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* locate */
+.ndname{flex:1;letter-spacing:.08em}.ndrssi{color:var(--dim);font-size:12px}
+.sigrow.hot{border-color:var(--gold);box-shadow:0 0 16px rgba(224,184,76,.22)}
+.sigrow.hot .ndname{color:var(--gold)}
 </style></head><body>
 <div class="scan"></div>
 <div class="app">
@@ -157,6 +164,7 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
   <div class="tab sel" data-v="mon">MONITOR</div>
   <div class="tab" data-v="fox">FOX HUNT</div>
   <div class="tab" data-v="sig">SIGNATURES</div>
+  <div class="tab" data-v="loc">LOCATE</div>
  </div>
 
  <!-- MONITOR -->
@@ -217,6 +225,18 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
      that keep returning are worth a look. Saved to SD when present.</p>
    <div id="siglist" class="siglist"></div>
    <p class="foot" id="sigempty">No signatures yet — capture a burst on the fox frequency.</p>
+  </div>
+ </div>
+ <!-- LOCATE -->
+ <div class="view" id="loc">
+  <div class="card"><h2>Node locator</h2>
+   <p class="foot" style="text-align:left;margin:-4px 0 10px">
+     Hottest node is nearest the source. Target <b id="loctgt">--</b>. <b>0</b> is
+     this Evil Crow (anchor); rovers report over ESP-NOW. Walk a rover and the
+     bars re-rank live. Amplified nodes read hotter — calibrate before trusting
+     the order across mixed radios.</p>
+   <div id="nodelist" class="siglist"></div>
+   <p class="foot" id="nodempty">Waiting for rover nodes on ESP-NOW…</p>
   </div>
  </div>
  <p class="foot"><span class="tx">No transmit path in this firmware.</span> Display &amp; tune only.</p>
@@ -297,6 +317,24 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');
  clearTimeout(window._tt);window._tt=setTimeout(()=>t.classList.remove('show'),2200);}
 fetch('/sigs.json').then(r=>r.json()).then(d=>d.sigs.forEach(renderSig)).catch(()=>{});
 
+// ---- locate (direction finding) ----
+const NODES={};
+function renderNode(d){NODES[d.id]=Object.assign(NODES[d.id]||{},d);const s=NODES[d.id];
+ $('#nodempty').style.display='none';
+ let row=document.getElementById('nd'+d.id);
+ if(!row){row=document.createElement('div');row.className='sigrow';row.id='nd'+d.id;
+  row.innerHTML=`<div class="sigmain"><b class="ndname"></b><span class="ndrssi"></span></div>
+   <div class="foxbar" style="margin-top:9px"><i></i></div>`;$('#nodelist').appendChild(row);}
+ row.querySelector('.ndname').textContent=d.id==='0'?'EVIL CROW · anchor':('NODE '+d.id);
+ row.querySelector('.ndrssi').textContent=s.rssi+' dBm'+(s.age>5?' · stale '+s.age+'s':'');
+ row.querySelector('.foxbar>i').style.width=Math.max(0,Math.min(100,(s.rssi+110)/80*100))+'%';
+ rankNodes();}
+function rankNodes(){const L=$('#nodelist');
+ [...L.children].sort((a,b)=>NODES[b.id.slice(2)].rssi-NODES[a.id.slice(2)].rssi)
+  .forEach((r,i,arr)=>{r.style.order=i;r.classList.toggle('hot',i===0&&arr.length>1);});}
+fetch('/nodes.json').then(r=>r.json()).then(d=>{if(d.target)$('#loctgt').textContent=d.target+' MHz';
+ d.nodes.forEach(renderNode);}).catch(()=>{});
+
 const PRESETS=[315,390,418,433.92,868.3,915];
 const chips=$('#chips');
 PRESETS.forEach(f=>{const c=document.createElement('span');c.className='chip';c.textContent=f;
@@ -305,7 +343,8 @@ function markChip(f){document.querySelectorAll('.chip').forEach(c=>
  c.classList.toggle('sel',parseFloat(c.textContent)===parseFloat(f)));}
 function setFreq(){const v=parseFloat($('#freqin').value);if(v)sendFreq(v);}
 function sendFreq(f){fetch('/fox?mhz='+f).then(()=>{});}
-function setWatchUI(f){$('#watch').textContent=f+' MHz';$('#foxf').textContent=f;markChip(f);}
+function setWatchUI(f){$('#watch').textContent=f+' MHz';$('#foxf').textContent=f;markChip(f);
+ const lt=$('#loctgt');if(lt)lt.textContent=f+' MHz';}
 
 // ---- audio beacon (classic fox-hunt beep: faster+higher = closer) ----
 let actx,audioOn=false,lastBeep=0;
@@ -341,6 +380,7 @@ function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
  else if(o.t==='sigupd'){const i=document.getElementById('lbl'+o.id);if(i)i.value=o.label;
    const r=document.getElementById('sig'+o.id);if(r)r.querySelector('.signew').style.display='none';}
  else if(o.t==='sigdel'){const r=document.getElementById('sig'+o.id);if(r)r.remove();delete SIG[o.id];}
+ else if(o.t==='node'){renderNode(o);}
  else if(o.t==='selftest'){let st=document.getElementById('st'+o.mod)||(()=>{
     let d=document.createElement('div');d.id='st'+o.mod;$('#selftest').appendChild(d);return d;})();
     let ok=o.version>0&&o.version<255;
@@ -387,6 +427,11 @@ inline void webSetup() {
     if (r->hasParam("id")) sigForget(r->getParam("id")->value().toInt());
     r->send(200, "application/json", "{\"ok\":true}");
   });
+#if USE_DF
+  server.on("/nodes.json", HTTP_GET, [](AsyncWebServerRequest *r){
+    r->send(200, "application/json", buildNodesJson());
+  });
+#endif
   events.onConnect([](AsyncEventSourceClient *c){
     c->send("{\"t\":\"hello\"}", NULL, millis(), 2000);
   });
