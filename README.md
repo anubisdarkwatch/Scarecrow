@@ -96,7 +96,7 @@ Pages, and attaches the binaries to a Release.
 
 - [x] Receive-only core, dual-radio, web dashboard
 - [x] Fox Hunt RSSI instrument
-- [ ] Signature library — persist/label burst sigs, flag first-seen emitters
+- [x] Signature library — persist/label burst sigs, flag first-seen emitters
 - [ ] Multi-node direction finding (bearing via RSSI delta / multilateration)
 - [ ] Meshtastic reporting path
 

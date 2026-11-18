@@ -13,6 +13,9 @@
 extern String buildStateJson();     // provided by the main sketch
 extern void   setWatchFreq(float);  // retune Module B (fox target)
 extern float  getWatchFreq();
+extern String buildSigsJson();      // signature library
+extern void   sigLabel(int, String);
+extern void   sigForget(int);
 
 static AsyncWebServer  server(80);
 static AsyncEventSource events("/events");
@@ -112,6 +115,19 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
 .foxbar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#2b3350,var(--gold),var(--hot));transition:width .12s}
 .foot{color:var(--dim);font-size:11px;text-align:center;margin-top:18px;letter-spacing:.06em}
 .foot .tx{color:var(--ok)}
+/* signatures */
+.siglist{display:flex;flex-direction:column;gap:9px;margin-top:4px}
+.sigrow{background:#090b12;border:1px solid var(--line);border-radius:12px;padding:12px}
+.sigmain{display:flex;align-items:center;gap:8px}
+.siglabel{flex:1;background:#05060a;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:9px;font:inherit}
+.signew{color:#06070b;background:var(--gold);border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;letter-spacing:.12em}
+.sigmeta{color:var(--dim);font-size:12px;margin:9px 2px 10px}.sigmeta b{color:var(--ink)}
+.sigacts{display:flex;gap:8px}.sigacts .btn{flex:1;padding:8px}
+.new{color:var(--gold)}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+ background:var(--gold);color:#06070b;font-weight:700;padding:11px 18px;border-radius:11px;
+ opacity:0;transition:.25s;z-index:9;pointer-events:none;letter-spacing:.04em;box-shadow:var(--glow)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style></head><body>
 <div class="scan"></div>
 <div class="app">
@@ -140,6 +156,7 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
  <div class="tabs">
   <div class="tab sel" data-v="mon">MONITOR</div>
   <div class="tab" data-v="fox">FOX HUNT</div>
+  <div class="tab" data-v="sig">SIGNATURES</div>
  </div>
 
  <!-- MONITOR -->
@@ -191,8 +208,20 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
    <p class="foot">Sweep the antenna &amp; your body; walk toward rising dBm. Peak = hottest bearing.</p>
   </div>
  </div>
+ <!-- SIGNATURES -->
+ <div class="view" id="sig">
+  <div class="card"><h2>Signature library</h2>
+   <p class="foot" style="text-align:left;margin:-4px 0 10px">
+     Emitters grouped by base symbol timing (<b>te</b>). <b class="new">NEW</b> =
+     first seen this session. Label the ones you recognise; unlabeled strangers
+     that keep returning are worth a look. Saved to SD when present.</p>
+   <div id="siglist" class="siglist"></div>
+   <p class="foot" id="sigempty">No signatures yet — capture a burst on the fox frequency.</p>
+  </div>
+ </div>
  <p class="foot"><span class="tx">No transmit path in this firmware.</span> Display &amp; tune only.</p>
 </div>
+<div id="toast" class="toast"></div>
 <script>
 const $=s=>document.querySelector(s),occBody=$('#occ tbody');
 // tabs
@@ -242,6 +271,32 @@ setInterval(()=>{$('#hz').textContent=fcount;fcount=0;},1000);
 function resetPeak(){peak=-200;$('#peakv').textContent='—';
  $('#peak').setAttribute('cx',24);$('#peak').setAttribute('cy',158);}
 
+// ---- signature library ----
+const SIG={};
+function sigMeta(d){return `te <b>${d.te}µs</b> &middot; edges ${d.nmin}`
+ +(d.nmax&&d.nmax!=d.nmin?'–'+d.nmax:'')+` &middot; seen <b>${d.count}×</b> &middot; <b>${d.rssi}</b>dBm`;}
+function renderSig(d){
+ const s=SIG[d.id]=Object.assign({nmin:d.nmin,nmax:d.nmax,count:0,label:''},SIG[d.id]||{},d);
+ $('#sigempty').style.display='none';
+ let row=document.getElementById('sig'+d.id);
+ if(!row){row=document.createElement('div');row.className='sigrow';row.id='sig'+d.id;
+  row.innerHTML=`<div class="sigmain"><input class="siglabel" id="lbl${d.id}" placeholder="unlabeled #${d.id}">
+   <span class="signew" style="display:none">NEW</span></div>
+   <div class="sigmeta"></div>
+   <div class="sigacts"><button class="btn ghost" onclick="labelSig(${d.id})">SAVE</button>
+   <button class="btn ghost" onclick="forgetSig(${d.id})">FORGET</button></div>`;
+  $('#siglist').prepend(row);
+  if(s.label)row.querySelector('.siglabel').value=s.label;}
+ row.querySelector('.sigmeta').innerHTML=sigMeta(s);
+ if(d.isNew)row.querySelector('.signew').style.display='inline';}
+function labelSig(id){const v=document.getElementById('lbl'+id).value;
+ fetch('/label?id='+id+'&name='+encodeURIComponent(v)).then(()=>toast('saved'));}
+function forgetSig(id){fetch('/forget?id='+id).then(()=>{
+ const r=document.getElementById('sig'+id);if(r)r.remove();delete SIG[id];});}
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');
+ clearTimeout(window._tt);window._tt=setTimeout(()=>t.classList.remove('show'),2200);}
+fetch('/sigs.json').then(r=>r.json()).then(d=>d.sigs.forEach(renderSig)).catch(()=>{});
+
 const PRESETS=[315,390,418,433.92,868.3,915];
 const chips=$('#chips');
 PRESETS.forEach(f=>{const c=document.createElement('span');c.className='chip';c.textContent=f;
@@ -280,6 +335,12 @@ function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
    $('#alarm').classList.add('on');clearTimeout(window._at);
    window._at=setTimeout(()=>$('#alarm').classList.remove('on'),6000);}
  else if(o.t==='watch'){setWatchUI(o.mhz);}
+ else if(o.t==='newsig'){renderSig({id:o.id,te:o.te,nmin:o.edges,nmax:o.edges,count:1,rssi:o.rssi,isNew:true});
+   toast('NEW signal · te '+o.te+'µs');}
+ else if(o.t==='sig'){renderSig({id:o.id,te:o.te,count:o.count,rssi:o.rssi});}
+ else if(o.t==='sigupd'){const i=document.getElementById('lbl'+o.id);if(i)i.value=o.label;
+   const r=document.getElementById('sig'+o.id);if(r)r.querySelector('.signew').style.display='none';}
+ else if(o.t==='sigdel'){const r=document.getElementById('sig'+o.id);if(r)r.remove();delete SIG[o.id];}
  else if(o.t==='selftest'){let st=document.getElementById('st'+o.mod)||(()=>{
     let d=document.createElement('div');d.id='st'+o.mod;$('#selftest').appendChild(d);return d;})();
     let ok=o.version>0&&o.version<255;
@@ -313,6 +374,18 @@ inline void webSetup() {
     if (r->hasParam("mhz")) setWatchFreq(r->getParam("mhz")->value().toFloat());
     r->send(200, "application/json",
       String("{\"ok\":true,\"watch_mhz\":") + String(getWatchFreq(), 2) + "}");
+  });
+  server.on("/sigs.json", HTTP_GET, [](AsyncWebServerRequest *r){
+    r->send(200, "application/json", buildSigsJson());
+  });
+  server.on("/label", HTTP_GET, [](AsyncWebServerRequest *r){
+    if (r->hasParam("id") && r->hasParam("name"))
+      sigLabel(r->getParam("id")->value().toInt(), r->getParam("name")->value());
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+  server.on("/forget", HTTP_GET, [](AsyncWebServerRequest *r){
+    if (r->hasParam("id")) sigForget(r->getParam("id")->value().toInt());
+    r->send(200, "application/json", "{\"ok\":true}");
   });
   events.onConnect([](AsyncEventSourceClient *c){
     c->send("{\"t\":\"hello\"}", NULL, millis(), 2000);

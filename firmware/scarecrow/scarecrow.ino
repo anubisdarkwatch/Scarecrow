@@ -134,6 +134,123 @@ void foxTick() {
         + ",\"rssi\":" + fr + "}");            // UI-only live stream
 }
 
+// ===========================================================================
+//  SIGNATURE LIBRARY
+//  Recognise returning emitters and flag first-seen ones. The raw FNV sig is
+//  jitter-sensitive (changes every press), so we fingerprint on `te` — the
+//  base symbol time (most common pulse width), which is stable per remote —
+//  and match with tolerance. Heuristic grouping by timing, not a unique ID:
+//  remotes that share a base timing can land in one entry.
+// ===========================================================================
+#define SIG_MAX        48
+#define SIG_TE_TOL_US  90     // two bursts are "same" if |te| within this
+
+struct Sig {
+  bool     used;
+  uint16_t te;                 // base pulse width (us)
+  uint16_t nmin, nmax;         // edge-count range seen
+  uint32_t count;
+  int16_t  lastRssi;
+  uint32_t firstMs, lastMs;
+  char     label[18];
+};
+Sig  sigs[SIG_MAX];
+bool     sigsDirty = false;
+uint32_t lastSigSave = 0;
+
+// base symbol time = mode of the pulse-width histogram (50us buckets)
+uint16_t computeTe(uint32_t *a, uint16_t n) {
+  uint16_t hist[40] = {0};
+  for (uint16_t i = 1; i < n; i++) { uint32_t d = a[i]; if (d < 2000) hist[d/50]++; }
+  uint16_t best = 2, bc = 0;
+  for (uint16_t b = 2; b < 40; b++) if (hist[b] > bc) { bc = hist[b]; best = b; }
+  return best * 50 + 25;
+}
+int sigFind(uint16_t te) {
+  for (int i = 0; i < SIG_MAX; i++)
+    if (sigs[i].used && abs((int)te - (int)sigs[i].te) <= SIG_TE_TOL_US) return i;
+  return -1;
+}
+int sigIngest(uint16_t te, uint16_t n, int16_t rssi, bool *isNew) {
+  int id = sigFind(te);
+  if (id < 0) {
+    for (int i = 0; i < SIG_MAX; i++) if (!sigs[i].used) { id = i; break; }
+    if (id < 0) return -1;                 // table full
+    sigs[id] = Sig{}; sigs[id].used = true; sigs[id].te = te;
+    sigs[id].nmin = n; sigs[id].nmax = n; sigs[id].firstMs = millis();
+    *isNew = true;
+  } else *isNew = false;
+  sigs[id].count++; sigs[id].lastRssi = rssi; sigs[id].lastMs = millis();
+  if (n < sigs[id].nmin) sigs[id].nmin = n;
+  if (n > sigs[id].nmax) sigs[id].nmax = n;
+  return id;
+}
+
+void sigsSave() {
+  sigsDirty = false; lastSigSave = millis();
+#if USE_SD
+  if (!sdOk) return;
+  SD.remove("/sigs.csv");
+  File f = SD.open("/sigs.csv", FILE_WRITE);
+  if (!f) return;
+  for (int i = 0; i < SIG_MAX; i++) if (sigs[i].used)
+    f.printf("%u,%u,%u,%lu,%d,%s\n", sigs[i].te, sigs[i].nmin, sigs[i].nmax,
+             (unsigned long)sigs[i].count, sigs[i].lastRssi, sigs[i].label);
+  f.close();
+#endif
+}
+void sigsLoad() {
+#if USE_SD
+  if (!sdOk) return;
+  File f = SD.open("/sigs.csv", FILE_READ);
+  if (!f) return;
+  while (f.available()) {
+    String ln = f.readStringUntil('\n'); ln.trim(); if (!ln.length()) continue;
+    int c1=ln.indexOf(','),c2=ln.indexOf(',',c1+1),c3=ln.indexOf(',',c2+1),
+        c4=ln.indexOf(',',c3+1),c5=ln.indexOf(',',c4+1);
+    if (c5<0) continue;
+    for (int i=0;i<SIG_MAX;i++) if(!sigs[i].used){
+      sigs[i]=Sig{}; sigs[i].used=true;
+      sigs[i].te=ln.substring(0,c1).toInt();
+      sigs[i].nmin=ln.substring(c1+1,c2).toInt();
+      sigs[i].nmax=ln.substring(c2+1,c3).toInt();
+      sigs[i].count=ln.substring(c3+1,c4).toInt();
+      sigs[i].lastRssi=ln.substring(c4+1,c5).toInt();
+      ln.substring(c5+1).toCharArray(sigs[i].label,sizeof(sigs[i].label));
+      break;
+    }
+  }
+  f.close();
+#endif
+}
+
+String buildSigsJson() {
+  String s = "{\"sigs\":[";
+  bool first = true;
+  for (int i = 0; i < SIG_MAX; i++) if (sigs[i].used) {
+    if (!first) s += ","; first = false;
+    s += "{\"id\":" + String(i) + ",\"te\":" + sigs[i].te
+       + ",\"nmin\":" + sigs[i].nmin + ",\"nmax\":" + sigs[i].nmax
+       + ",\"count\":" + sigs[i].count + ",\"rssi\":" + sigs[i].lastRssi
+       + ",\"age\":" + ((millis() - sigs[i].lastMs) / 1000)
+       + ",\"label\":\"" + String(sigs[i].label) + "\"}";
+  }
+  s += "]}"; return s;
+}
+void sigLabel(int id, String name) {
+  if (id < 0 || id >= SIG_MAX || !sigs[id].used) return;
+  String clean; for (uint16_t i=0;i<name.length() && clean.length()<17;i++){
+    char ch=name[i]; if(isalnum(ch)||ch==' '||ch=='-'||ch=='_') clean+=ch; }
+  clean.toCharArray(sigs[id].label, sizeof(sigs[id].label));
+  sigsSave();
+  webPush(String("{\"t\":\"sigupd\",\"id\":")+id+",\"label\":\""+sigs[id].label+"\"}");
+}
+void sigForget(int id) {
+  if (id < 0 || id >= SIG_MAX) return;
+  sigs[id].used = false; sigsSave();
+  webPush(String("{\"t\":\"sigdel\",\"id\":")+id+"}");
+}
+
 // ---------------------------------------------------------------------------
 //  Radio bring-up — RX ONLY
 // ---------------------------------------------------------------------------
@@ -177,6 +294,7 @@ void setup() {
   sdOk = SD.begin(SD_SS, sdSPI);
   if (sdOk) logFile = SD.open("/scarecrow.ndjson", FILE_APPEND);
 #endif
+  sigsLoad();                 // restore saved signature library (if SD present)
 
   initScanner();
   initListener();
@@ -188,7 +306,7 @@ void setup() {
   moduleSelfTest(MOD_B, "B");
   ELECHOUSE_cc1101.setModul(MOD_A);   // leave scanner selected
 
-  emit(String("{\"t\":\"boot\",\"fw\":\"scarecrow-0.7\",\"tx\":false,")
+  emit(String("{\"t\":\"boot\",\"fw\":\"scarecrow-0.8\",\"tx\":false,")
      + "\"channels\":" + SCAN_PLAN_LEN
      + ",\"watch_mhz\":" + String(watchFreq, 2)
      + ",\"ap_ip\":\"" + webApIp() + "\""
@@ -295,6 +413,20 @@ void reapBurst() {
      + ",\"min_us\":" + shortest + ",\"max_us\":" + longest
      + ",\"sig\":\"" + String(h, HEX) + "\""
      + ",\"ovf\":" + (ovf ? "true" : "false") + "}", true);
+
+  // --- signature library: fingerprint on base timing, flag first-seen ---
+  uint16_t te = computeTe(snap, n);
+  bool isNew = false;
+  int id = sigIngest(te, n, rssi, &isNew);
+  if (id >= 0) {
+    sigsDirty = true;
+    if (isNew)   // noteworthy -> serial/SD/UI
+      emit(String("{\"t\":\"newsig\",\"id\":") + id + ",\"te\":" + te
+         + ",\"edges\":" + n + ",\"rssi\":" + rssi + "}", true);
+    else         // routine re-sighting -> UI only
+      webPush(String("{\"t\":\"sig\",\"id\":") + id + ",\"count\":" + sigs[id].count
+            + ",\"rssi\":" + rssi + ",\"te\":" + te + "}");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +458,7 @@ void loop() {
   reapBurst();      // non-blocking; drains Module B's ISR buffer
   foxTick();        // fast RSSI on the fox freq -> UI
   maybeReport();
+  if (sigsDirty && millis() - lastSigSave > 3000) sigsSave();  // debounced persist
 
   if (millis() - lastSelfTest > 5000) {   // module health every 5s
     lastSelfTest = millis();
