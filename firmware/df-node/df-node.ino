@@ -29,6 +29,8 @@ uint16_t lastTe = 0;
 uint32_t burstCount = 0;
 uint8_t  nodeVer = 0;                 // CC1101 VERSION reg (0x14≈20 = SPI alive)
 volatile uint32_t txOk = 0, txFail = 0;
+int      lastSendRC = -1;             // last esp_now_send() return (0 = ESP_OK)
+bool     espnowOk = false;
 
 void onDfSent(const wifi_tx_info_t *info, esp_now_send_status_t st) {
   if (st == ESP_NOW_SEND_SUCCESS) txOk++; else txFail++;
@@ -75,8 +77,9 @@ void drawScreen() {
   // diagnostics: CC1101 version (SPI alive?) + ESP-NOW tx ok/fail
   uint16_t vcol = (nodeVer > 0 && nodeVer < 255) ? C_OK : C_GOLD;
   cv.setTextColor(vcol, C_BG);
-  char bl[26]; snprintf(bl, sizeof(bl), "v%u tx%lu/%lu b%d%%",
-    nodeVer, (unsigned long)txOk, (unsigned long)txFail, M5.Power.getBatteryLevel());
+  // v=CC1101 version, e=espnow init, s=last send rc, tx=ok count
+  char bl[30]; snprintf(bl, sizeof(bl), "v%u e%d s%d tx%lu b%d%%",
+    nodeVer, espnowOk ? 1 : 0, lastSendRC, (unsigned long)txOk, M5.Power.getBatteryLevel());
   cv.drawString(bl, 6, H - 6);
   cv.pushSprite(0, 0);
 }
@@ -106,13 +109,16 @@ void dfSend(uint8_t kind, int16_t rssi, uint16_t te, uint16_t edges) {
   p.magic = DF_MAGIC; p.node = NODE_ID; p.kind = kind;
   p.seq = seq++; p.t_ms = millis(); p.rssi = rssi;
   p.te = te; p.edges = edges; p.freq_x100 = TARGET_FREQ_X100;
-  esp_now_send(BCAST, (uint8_t*)&p, sizeof(p));
+  lastSendRC = esp_now_send(BCAST, (uint8_t*)&p, sizeof(p));
 }
 
 void setup() {
 #if USE_M5
   auto cfg = M5.config();
   M5.begin(cfg);                        // powers board + display (handles PMU/BL)
+  M5.Power.setExtOutput(true);          // enable external bus rail -> powers the
+                                        // RF Pack's CC1101 + SN74 (off by default)
+  delay(50);
   M5.Display.setRotation(0);
   M5.Display.setBrightness(140);
   cv.createSprite(M5.Display.width(), M5.Display.height());
@@ -143,7 +149,8 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();                                // don't associate to any AP
   esp_wifi_set_ps(WIFI_PS_NONE);                    // no power save -> no missed slots
-  if (esp_now_init() != ESP_OK) Serial.println("esp_now init failed");
+  espnowOk = (esp_now_init() == ESP_OK);
+  if (!espnowOk) Serial.println("esp_now init failed");
   esp_now_register_send_cb(onDfSent);
   esp_wifi_set_channel(COLLECTOR_CHANNEL, WIFI_SECOND_CHAN_NONE);
   esp_now_peer_info_t peer = {};
@@ -151,8 +158,9 @@ void setup() {
   peer.channel = COLLECTOR_CHANNEL; peer.ifidx = WIFI_IF_STA; peer.encrypt = false;
   esp_now_add_peer(&peer);
 
-  Serial.printf("{\"t\":\"nodeboot\",\"node\":\"%c\",\"freq\":%.2f,\"ch\":%d,\"tx\":false}\n",
-                NODE_ID, TARGET_FREQ_MHZ, COLLECTOR_CHANNEL);
+  Serial.printf("{\"t\":\"nodeboot\",\"node\":\"%c\",\"freq\":%.2f,\"ch\":%d,"
+                "\"cc1101_ver\":%u,\"espnow_init\":%d,\"ext_power\":true,\"tx\":false}\n",
+                NODE_ID, TARGET_FREQ_MHZ, COLLECTOR_CHANNEL, nodeVer, espnowOk ? 1 : 0);
 }
 
 void reapBurst() {
