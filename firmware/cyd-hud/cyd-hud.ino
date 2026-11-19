@@ -4,7 +4,8 @@
 //  Joins the Scarecrow Wi-Fi AP and renders two views off the collector's JSON:
 //    * LOCATE     — anchor + rover nodes, heat-coloured RSSI bars
 //    * SIGNATURES — the live signature library (/sigs.json)
-//  Switch views by tapping the screen; it also auto-cycles if left alone.
+//  Switch views by tapping the screen (tap-only — it never changes on its own,
+//  so you can keep your eye on a signal).
 //
 //  Display: TFT_eSPI (panel config via -D build flags: see build command).
 //  Touch:   XPT2046 PENIRQ on GPIO36 — a tap toggles the view (no SPI needed).
@@ -245,8 +246,7 @@ void loop() {
   if (touched && !touchPrev && millis() - lastTouch > 300) { lastTouch = millis(); flipView(); }
   touchPrev = touched;
 
-  // auto-cycle views every 8s so both are seen hands-free
-  if (millis() - lastAutoFlip > 8000) flipView();
+  // tap-only: no auto-cycle, so a signal stays on screen until you switch it.
 
   if (wifiOk && millis() - lastPoll > 400) { lastPoll = millis();
     if (view == V_LOCATE && pollNodes()) drawLocate();
