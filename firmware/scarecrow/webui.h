@@ -83,6 +83,11 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
 .bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--ok),var(--acc));transition:width .25s}
 #selftest div{font-size:12px;color:var(--dim);margin:3px 0}
 #selftest b{color:var(--ink);letter-spacing:.08em}
+#wf{width:100%;height:150px;display:block;border-radius:6px;background:#06070b;
+ box-shadow:inset 0 0 0 1px var(--line)}
+.wfleg{height:6px;border-radius:3px;margin:9px 0 3px;
+ background:linear-gradient(90deg,#06070b,#2e6e8c,#e0b84c,#ff4d5e)}
+.wflab{display:flex;justify-content:space-between;color:var(--dim);font-size:9px;letter-spacing:.04em}
 #log{max-height:46vh;overflow:auto}
 #log div{padding:3px 0;border-bottom:1px solid #141825;white-space:pre-wrap;word-break:break-all;font-size:12.5px}
 .burst{color:var(--acc)} .busy{color:var(--gold)} .alm{color:var(--hot)} .k{color:var(--dim)}
@@ -171,6 +176,11 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
  <div class="view sel" id="mon">
   <p id="alarm">⚠ BROADBAND INTERFERENCE</p>
   <div class="card"><h2>Radio self-test</h2><div id="selftest"></div></div>
+  <div class="card"><h2>Spectrum waterfall</h2>
+   <canvas id="wf"></canvas>
+   <div class="wfleg"></div>
+   <div class="wflab"><span>weak</span><span id="wfband"></span><span>strong</span></div>
+  </div>
   <div class="card"><h2>Channel occupancy</h2>
    <table id="occ"><thead><tr><th>MHz</th><th>RSSI</th><th>busy</th><th>floor</th><th>live</th></tr></thead>
    <tbody></tbody></table></div>
@@ -253,6 +263,19 @@ function row(mhz,busy,floor,rssi){let tr=document.getElementById('c'+mhz);
  if(rssi!=null){tr.querySelector('.r').textContent=rssi;
   tr.querySelector('.bar>i').style.width=Math.max(0,Math.min(100,(rssi+110)/80*100))+'%';}
  tr.querySelector('.b').textContent=busy;tr.querySelector('.f').textContent=floor;}
+
+// ---- spectrum waterfall (one row per sweep, newest on top) ----
+let wfctx=null,WFn=0;
+function wfColor(r){let p=Math.max(0,Math.min(1,(r+110)/70));           // -110 floor .. -40 hot
+ const S=[[6,7,11],[46,110,140],[224,184,76],[255,77,94]];let g=p*3,i=g|0,t=g-i;if(i>2){i=2;t=1;}
+ const a=S[i],b=S[i+1]||a;return`rgb(${a[0]+(b[0]-a[0])*t|0},${a[1]+(b[1]-a[1])*t|0},${a[2]+(b[2]-a[2])*t|0})`;}
+function wfInit(keys){const c=$('#wf');c.width=c.clientWidth||320;c.height=150;wfctx=c.getContext('2d');WFn=keys.length;
+ const b=$('#wfband');if(b)b.textContent=parseFloat(keys[0]).toFixed(0)+'–'+parseFloat(keys[keys.length-1]).toFixed(0)+' MHz';}
+function drawWaterfall(ro){if(!ro)return;const keys=Object.keys(ro).sort((a,b)=>parseFloat(a)-parseFloat(b));
+ if(!wfctx||WFn!==keys.length)wfInit(keys);if(!wfctx||!wfctx.canvas.width)return;
+ const c=wfctx.canvas,n=keys.length,cw=c.width/n,rh=3;
+ wfctx.drawImage(c,0,rh);                                              // scroll down
+ for(let i=0;i<n;i++){wfctx.fillStyle=wfColor(parseFloat(ro[keys[i]]));wfctx.fillRect(i*cw|0,0,Math.ceil(cw),rh);}}
 function add(cls,txt){const d=document.createElement('div');d.className=cls;
  d.textContent=new Date().toLocaleTimeString()+'  '+txt;$('#log').prepend(d);
  while($('#log').childElementCount>200)$('#log').lastChild.remove();}
@@ -377,7 +400,7 @@ function beep(r){if(!actx)return;const p=pct(r);
 function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
  if(o.t==='fox'){foxUpdate(o.rssi);}
  else if(o.t==='sweep'){$('#sw').textContent=o.n;for(const m in o.occ)
-   row(m,o.occ[m],(window._fl&&window._fl[m])??'--',o.rssi?o.rssi[m]:null);}
+   row(m,o.occ[m],(window._fl&&window._fl[m])??'--',o.rssi?o.rssi[m]:null);drawWaterfall(o.rssi);}
  else if(o.t==='busy'){add('busy',`busy ${o.mhz}  ${o.rssi}dBm (floor ${o.floor})`);
    (window._fl=window._fl||{})[(+o.mhz).toFixed(2)]=o.floor;}
  else if(o.t==='burst'){add('burst',`burst ${o.mhz}  ${o.edges} edges  ${o.dur_us}us  sig ${o.sig}  ${o.rssi}dBm`);}
