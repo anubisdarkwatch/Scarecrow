@@ -43,6 +43,7 @@
 
 static uint8_t BCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 uint32_t seq = 0, lastBeacon = 0;
+float    watchMhz = TARGET_FREQ_MHZ;  // runtime band — follows the collector
 int16_t  lastRssi = -120;
 uint16_t lastTe = 0;
 uint32_t burstCount = 0;
@@ -100,6 +101,16 @@ static void radioSetup() {
   nodeVer = (radioInitRC == RADIOLIB_ERR_NONE) ? 0x14 : 0;
 }
 static inline int16_t radioRssi() { return (int16_t)lroundf(radio.getRSSI()); }
+static void radioRetune(float mhz) {
+#ifdef CC_SW0
+  // T-Embed antenna RF switch: 315 / 434 / 868-915 band paths.
+  if (mhz < 350)      { digitalWrite(CC_SW1, HIGH); digitalWrite(CC_SW0, LOW);  }
+  else if (mhz < 600) { digitalWrite(CC_SW1, HIGH); digitalWrite(CC_SW0, HIGH); }
+  else                { digitalWrite(CC_SW1, LOW);  digitalWrite(CC_SW0, HIGH); }
+#endif
+  radio.setFrequency(mhz);
+  radio.receiveDirectAsync();
+}
 
 #else  // ---- ELECHOUSE fork (classic ESP32) ----
 static void radioSetup() {
@@ -120,6 +131,10 @@ static void radioSetup() {
   radioInitRC = nodeVer;
 }
 static inline int16_t radioRssi() { return (int16_t)ELECHOUSE_cc1101.getRssi(); }
+static void radioRetune(float mhz) {
+  ELECHOUSE_cc1101.setMHZ(mhz);
+  ELECHOUSE_cc1101.SetRx();
+}
 #endif
 
 // ---- T-Embed onboard display (TFT_eSPI, ST7789V 320x170 on HSPI) -----------
@@ -248,8 +263,17 @@ void dfSend(uint8_t kind, int16_t rssi, uint16_t te, uint16_t edges) {
   DfPacket p;
   p.magic = DF_MAGIC; p.node = NODE_ID; p.kind = kind;
   p.seq = seq++; p.t_ms = millis(); p.rssi = rssi;
-  p.te = te; p.edges = edges; p.freq_x100 = TARGET_FREQ_X100;
+  p.te = te; p.edges = edges; p.freq_x100 = (uint16_t)(watchMhz * 100);
   lastSendRC = esp_now_send(BCAST, (uint8_t*)&p, sizeof(p));
+}
+
+// Collector pushes the band to follow; retune the CC1101 to match.
+void onCfgRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  if (len < (int)sizeof(CfgPacket)) return;
+  CfgPacket c; memcpy(&c, data, sizeof(c));
+  if (c.magic != DF_MAGIC || c.kind != DF_KIND_CFG) return;
+  if (c.watch_mhz < 280 || c.watch_mhz > 960) return;
+  if (fabsf(c.watch_mhz - watchMhz) > 0.05f) { watchMhz = c.watch_mhz; radioRetune(watchMhz); }
 }
 
 void setup() {
@@ -284,6 +308,7 @@ void setup() {
   espnowOk = (esp_now_init() == ESP_OK);
   if (!espnowOk) Serial.println("# esp_now init failed");
   esp_now_register_send_cb(onDfSent);
+  esp_now_register_recv_cb(onCfgRecv);               // follow the collector's band
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BCAST, 6);
   peer.channel = COLLECTOR_CHANNEL; peer.encrypt = false;

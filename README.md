@@ -123,12 +123,23 @@ nodes** (any ESP32/ESP32-S3 + a single CC1101) park on the target frequency and
 broadcast their RSSI + burst `te` to the anchor. Hottest node = nearest the
 source. No TDOA (CC1101 can't) — this is coarse RSSI ranking, not a pinpoint.
 
-- **Node firmware:** `firmware/df-node/` — set your board in `node_config.h`
-  (`BOARD_STICKS3_RFPACK` with verified pins, or `BOARD_GENERIC_CC1101` for a
-  Rabbit Labs Flux Capacitor / Slim-Line / bare EByte CC1101 you wire yourself),
-  a unique `NODE_ID`, and the channel to match the anchor's `AP_CHANNEL`.
+- **Node firmware:** `firmware/df-node/` — set your board in `node_config.h`:
+  `BOARD_TEMBED_CC1101` (LilyGo T-Embed CC1101, ESP32-S3 + onboard CC1101 —
+  verified pins, RadioLib, **recommended**), `BOARD_STICKS3_RFPACK` (M5Stack
+  StickS3 + RF Pack), or `BOARD_GENERIC_CC1101` (bare EByte CC1101 you wire).
+  Give each a unique `NODE_ID` and the channel matching the anchor's `AP_CHANNEL`.
+  On the T-Embed, build **headless** (`TEMBED_HEADLESS`, the default) so the
+  CC1101 gets the HSPI bus to itself — sharing it with the display starves RX.
 - **Collector:** enabled by `USE_DF` in `firmware/scarecrow/config.h`; receives
   ESP-NOW reports and ranks nodes in the `LOCATE` tab. The Evil Crow is node `0`.
+- **Band hop:** pick any band from the `FOX HUNT` chips (315 / 433.92 / 868.3 /
+  915). The collector retunes *and* broadcasts the band over ESP-NOW; every rover
+  follows — retuning its CC1101 and flipping its antenna RF switch — so the whole
+  mesh hunts the same frequency.
+- **CYD HUD:** `firmware/cyd-hud/` — a Cheap Yellow Display (ESP32-2432S024 /
+  S028R) dashboard. Joins the Scarecrow AP and renders the live `LOCATE` +
+  `SIGNATURES` views (tap to switch). A desk/wall screen, no laptop needed.
+  Receive-only; touches nothing on the collector.
 - **Caveats:** ESP-NOW peers must share the anchor's WiFi channel. Amplified
-  nodes (Flux Capacitor LNA) read systematically hotter — calibrate a per-node
-  offset before trusting the ranking across mixed radios; a matched pair is cleanest.
+  nodes read systematically hotter — calibrate a per-node offset before trusting
+  the ranking across mixed radios; a matched pair is cleanest.

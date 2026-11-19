@@ -124,6 +124,9 @@ void setWatchFreq(float f) {
   ELECHOUSE_cc1101.SetRx();
   ELECHOUSE_cc1101.setModul(MOD_A);
   emit(String("{\"t\":\"watch\",\"mhz\":") + String(watchFreq, 2) + "}", true);
+#if USE_DF
+  cfgBroadcast();                 // push the new band to rover nodes right away
+#endif
 }
 
 // Fast RSSI on the fox/watch frequency, pushed to the UI only (not serial/SD).
@@ -299,7 +302,16 @@ String buildNodesJson() {
   s += "]}"; return s;
 }
 
+// Broadcast the current watch band so every rover node retunes to follow it.
+void cfgBroadcast() {
+  static uint8_t bcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+  CfgPacket c; c.magic = DF_MAGIC; c.kind = DF_KIND_CFG; c.watch_mhz = watchFreq;
+  esp_now_send(bcast, (uint8_t*)&c, sizeof(c));
+}
+
+uint32_t lastCfgBcast = 0;
 void dfTick() {
+  if (millis() - lastCfgBcast > 2000) { lastCfgBcast = millis(); cfgBroadcast(); }
   if (millis() - lastDfTick < 250) return;
   lastDfTick = millis();
   webPush(String("{\"t\":\"node\",\"id\":\"0\",\"self\":true,\"rssi\":") + lastFoxRssi + ",\"age\":0}");
@@ -366,7 +378,14 @@ void setup() {
   initListener();
   webSetup();
 #if USE_DF
-  if (esp_now_init() == ESP_OK) esp_now_register_recv_cb(onDfRecv);  // AP channel = AP_CHANNEL
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(onDfRecv);              // AP channel = AP_CHANNEL
+    static uint8_t bcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, bcast, 6);
+    peer.channel = AP_CHANNEL; peer.encrypt = false;
+    esp_now_add_peer(&peer);                         // so we can push band config out
+  }
 #endif
 
   for (int i = 0; i < SCAN_PLAN_LEN; i++) { floorDb[i] = -110; lastRssi[i] = -127; busyAccum[i] = 0; }
