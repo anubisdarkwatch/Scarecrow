@@ -230,13 +230,8 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
  <!-- LOCATE -->
  <div class="view" id="loc">
   <div class="card"><h2>Node locator</h2>
-   <p class="foot" style="text-align:left;margin:-4px 0 10px">
-     Hottest node is nearest the source. Target <b id="loctgt">--</b>. <b>0</b> is
-     this Evil Crow (anchor); rovers report over ESP-NOW. Walk a rover and the
-     bars re-rank live. Amplified nodes read hotter — calibrate before trusting
-     the order across mixed radios.</p>
+   <p class="foot" id="locmsg" style="text-align:left;margin:-4px 0 10px"></p>
    <div id="nodelist" class="siglist"></div>
-   <p class="foot" id="nodempty">Waiting for rover nodes on ESP-NOW…</p>
   </div>
  </div>
  <p class="foot"><span class="tx">No transmit path in this firmware.</span> Display &amp; tune only.</p>
@@ -318,9 +313,17 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');
 fetch('/sigs.json').then(r=>r.json()).then(d=>d.sigs.forEach(renderSig)).catch(()=>{});
 
 // ---- locate (direction finding) ----
-const NODES={};
-function renderNode(d){NODES[d.id]=Object.assign(NODES[d.id]||{},d);const s=NODES[d.id];
- $('#nodempty').style.display='none';
+const NODES={};let curTarget='--';
+// A rover counts as active if we've heard from it in the last 12s.
+function activeRovers(){return Object.values(NODES).filter(n=>n.id!=='0'&&(Date.now()-(n.seen||0))<12000).length;}
+function updateLocateMode(){const m=$('#locmsg');if(!m)return;const r=activeRovers();
+ if(r===0){m.innerHTML='<b>Standalone.</b> This Evil Crow (anchor) is your single-point '
+   +'fox meter on <b>'+curTarget+'</b> — the bar below rises as you near the source. '
+   +'Add one or more rover nodes over ESP-NOW for multi-point direction finding.';}
+ else{m.innerHTML='<b>'+r+' rover'+(r>1?'s':'')+' active.</b> Hottest node is nearest the source. '
+   +'Target <b>'+curTarget+'</b>; <b>0</b> is this Evil Crow (anchor). Walk a rover and the bars '
+   +'re-rank live. Amplified nodes read hotter — calibrate before trusting the order across mixed radios.';}}
+function renderNode(d){NODES[d.id]=Object.assign(NODES[d.id]||{},d,{seen:Date.now()});const s=NODES[d.id];
  let row=document.getElementById('nd'+d.id);
  if(!row){row=document.createElement('div');row.className='sigrow';row.id='nd'+d.id;
   row.innerHTML=`<div class="sigmain"><b class="ndname"></b><span class="ndrssi"></span></div>
@@ -328,12 +331,20 @@ function renderNode(d){NODES[d.id]=Object.assign(NODES[d.id]||{},d);const s=NODE
  row.querySelector('.ndname').textContent=d.id==='0'?'EVIL CROW · anchor':('NODE '+d.id);
  row.querySelector('.ndrssi').textContent=s.rssi+' dBm'+(s.age>5?' · stale '+s.age+'s':'');
  row.querySelector('.foxbar>i').style.width=Math.max(0,Math.min(100,(s.rssi+110)/80*100))+'%';
- rankNodes();}
+ rankNodes();updateLocateMode();}
 function rankNodes(){const L=$('#nodelist');
  [...L.children].sort((a,b)=>NODES[b.id.slice(2)].rssi-NODES[a.id.slice(2)].rssi)
   .forEach((r,i,arr)=>{r.style.order=i;r.classList.toggle('hot',i===0&&arr.length>1);});}
-fetch('/nodes.json').then(r=>r.json()).then(d=>{if(d.target)$('#loctgt').textContent=d.target+' MHz';
- d.nodes.forEach(renderNode);}).catch(()=>{});
+// Drop rovers we stop hearing from (anchor 0 always stays); keep the mode honest.
+function sweepNodes(){const now=Date.now();
+ for(const id in NODES){if(id==='0')continue;const age=(now-NODES[id].seen)/1000;
+  const row=document.getElementById('nd'+id);
+  if(age>30){if(row)row.remove();delete NODES[id];continue;}
+  if(row)row.querySelector('.ndrssi').textContent=NODES[id].rssi+' dBm'+(age>6?' · stale '+Math.round(age)+'s':'');}
+ rankNodes();updateLocateMode();}
+setInterval(sweepNodes,3000);
+fetch('/nodes.json').then(r=>r.json()).then(d=>{if(d.target)curTarget=d.target+' MHz';
+ d.nodes.forEach(renderNode);updateLocateMode();}).catch(()=>updateLocateMode());
 
 const PRESETS=[315,390,418,433.92,868.3,915];
 const chips=$('#chips');
@@ -344,7 +355,7 @@ function markChip(f){document.querySelectorAll('.chip').forEach(c=>
 function setFreq(){const v=parseFloat($('#freqin').value);if(v)sendFreq(v);}
 function sendFreq(f){fetch('/fox?mhz='+f).then(()=>{});}
 function setWatchUI(f){$('#watch').textContent=f+' MHz';$('#foxf').textContent=f;markChip(f);
- const lt=$('#loctgt');if(lt)lt.textContent=f+' MHz';}
+ curTarget=f+' MHz';updateLocateMode();}
 
 // ---- audio beacon (classic fox-hunt beep: faster+higher = closer) ----
 let actx,audioOn=false,lastBeep=0;
