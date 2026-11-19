@@ -6,13 +6,18 @@
 // ============================================================================
 #pragma once
 
+// ---- Radio driver backend selectors ----------------------------------------
+#define RADIO_DRIVER_ELECHOUSE 1   // ELECHOUSE_CC1101_SRC_DRV (classic ESP32)
+#define RADIO_DRIVER_RADIOLIB  2   // jgromes/RadioLib (ESP32-S3 / C-series friendly)
+
 // ---- Pick your board -------------------------------------------------------
-#define BOARD_STICKS3_RFPACK  1   // M5Stack StickS3 + Pingequa RF Pack S3 (CC1101)
-#define BOARD_GENERIC_CC1101  2   // ESP32 + any bare/Flipper-GPIO CC1101 you wire:
-                                  //   Rabbit Labs Flux Capacitor / Slim-Line, EByte E07, etc.
-#define BOARD  BOARD_STICKS3_RFPACK
+#define BOARD_STICKS3_RFPACK  1   // M5Stack StickS3 + Pingequa RF Pack S3  [ELECHOUSE]
+#define BOARD_GENERIC_CC1101  2   // Any ESP32 + a bare CC1101 you wire      [ELECHOUSE]
+#define BOARD_TEMBED_CC1101   3   // LilyGo T-Embed CC1101 (ESP32-S3)        [RadioLib]
+#define BOARD  BOARD_TEMBED_CC1101
 
 #if BOARD == BOARD_STICKS3_RFPACK
+  #define RADIO_DRIVER RADIO_DRIVER_ELECHOUSE
   // Verified: BruceDevices/firmware boards/m5stack-sticks3/connections.md
   #define CC_SCK   5
   #define CC_MISO  4
@@ -26,15 +31,34 @@
   #define BUS_NRF_CS   8
   #define BUS_SD_CS    7
 #elif BOARD == BOARD_GENERIC_CC1101
-  // Standard ESP32 VSPI wiring — change these to match how you wired the
-  // Rabbit Labs board's CC1101 SPI header (SCK/MISO/MOSI/CSN) + GDO0.
-  // Flux Capacitor note: its E07 front-end has a TX/RX switch; we never TX,
-  // so it sits in RX and the LNA path is active. Nothing to drive for RX-only.
+  #define RADIO_DRIVER RADIO_DRIVER_ELECHOUSE
+  // Standard ESP32 VSPI wiring — change these to match how you wired the CC1101
+  // SPI header (SCK/MISO/MOSI/CSN) + GDO0 on whatever ESP32 you're using.
   #define CC_SCK   18
   #define CC_MISO  19
   #define CC_MOSI  23
   #define CC_CS    5
   #define CC_GDO0  4
+  #define HAS_SN74_BUS 0
+#elif BOARD == BOARD_TEMBED_CC1101
+  // Verified against LilyGo factory firmware (Xinyuan-LilyGO/T-Embed-CC1101:
+  // examples/utilities.h + examples/cc1101_recv_irq.ino). The onboard CC1101
+  // lives on the board's "LORA" SPI pins (HSPI). Two things the generic wiring
+  // guides omit, and which otherwise look exactly like a dead radio:
+  //   * GPIO15 (PWR_EN) must be driven HIGH to power the CC1101.
+  //   * the antenna RF switch (SW1/SW0) selects the band (both HIGH = 434 MHz).
+  #define RADIO_DRIVER RADIO_DRIVER_RADIOLIB
+  #define CC_SCK    11   // BOARD_SPI_SCK
+  #define CC_MISO   10   // BOARD_SPI_MISO
+  #define CC_MOSI   9    // BOARD_SPI_MOSI
+  #define CC_CS     12   // BOARD_LORA_CS
+  #define CC_GDO0   3    // BOARD_LORA_IO0  (raw OOK data + edge IRQ)
+  #define CC_GDO2   38   // BOARD_LORA_IO2
+  #define CC_PWR_EN 15   // BOARD_PWR_EN: HIGH powers the CC1101 (+ WS2812)
+  #define CC_SW0    48   // BOARD_LORA_SW0  antenna RF switch
+  #define CC_SW1    47   // BOARD_LORA_SW1
+  #define CC_DISPLAY_CS 41  // park HIGH before init (shared SPI bus)
+  #define CC_SD_CS      13  // park HIGH before init (shared SPI bus)
   #define HAS_SN74_BUS 0
 #endif
 
