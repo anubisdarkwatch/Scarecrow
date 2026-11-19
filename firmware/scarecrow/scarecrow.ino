@@ -537,21 +537,6 @@ void maybeReport() {
   emit(s, true);
 }
 
-// Lightweight live RSSI push for the web UI spectrum waterfall (SSE only — no
-// serial/SD, no new HTTP connections, so it can run fast without starving SSE).
-void wfTick() {
-  static uint32_t lastWf = 0;
-  if (millis() - lastWf < 250) return;
-  lastWf = millis();
-  String s = "{\"t\":\"wf\",\"r\":{";
-  for (int i = 0; i < SCAN_PLAN_LEN; i++) {
-    if (i) s += ",";
-    s += "\"" + String(SCAN_PLAN[i], 2) + "\":" + lastRssi[i];
-  }
-  s += "}}";
-  webPush(s);
-}
-
 // ---------------------------------------------------------------------------
 //  LOOP — scanner and listener run concurrently; listener is interrupt-driven
 //  so a full sweep never blocks burst capture on the other radio.
@@ -561,7 +546,6 @@ void loop() {
   reapBurst();      // non-blocking; drains Module B's ISR buffer
   foxTick();        // fast RSSI on the fox freq -> UI
   maybeReport();
-  wfTick();         // live per-channel RSSI -> waterfall
   if (sigsDirty && millis() - lastSigSave > 3000) sigsSave();  // debounced persist
 #if USE_DF
   dfTick();         // rank rover nodes -> LOCATE view
