@@ -276,10 +276,6 @@ function drawWaterfall(ro){if(!ro)return;const keys=Object.keys(ro).sort((a,b)=>
  const c=wfctx.canvas,n=keys.length,cw=c.width/n,rh=3;
  wfctx.drawImage(c,0,rh);                                              // scroll down
  for(let i=0;i<n;i++){wfctx.fillStyle=wfColor(parseFloat(ro[keys[i]]));wfctx.fillRect(i*cw|0,0,Math.ceil(cw),rh);}}
-// Fast feed: poll live per-channel RSSI ~4x/s while MONITOR is visible.
-setInterval(()=>{const mon=document.getElementById('mon');if(!mon||!mon.classList.contains('sel'))return;
- fetch('/state.json').then(r=>r.json()).then(s=>{if(!s.channels)return;
-  const ro={};s.channels.forEach(c=>ro[c.mhz]=c.rssi);drawWaterfall(ro);}).catch(()=>{});},250);
 function add(cls,txt){const d=document.createElement('div');d.className=cls;
  d.textContent=new Date().toLocaleTimeString()+'  '+txt;$('#log').prepend(d);
  while($('#log').childElementCount>200)$('#log').lastChild.remove();}
@@ -403,6 +399,7 @@ function beep(r){if(!actx)return;const p=pct(r);
 // ---- stream ----
 function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
  if(o.t==='fox'){foxUpdate(o.rssi);}
+ else if(o.t==='wf'){drawWaterfall(o.r);}
  else if(o.t==='sweep'){$('#sw').textContent=o.n;for(const m in o.occ)
    row(m,o.occ[m],(window._fl&&window._fl[m])??'--',o.rssi?o.rssi[m]:null);}
  else if(o.t==='busy'){add('busy',`busy ${o.mhz}  ${o.rssi}dBm (floor ${o.floor})`);
