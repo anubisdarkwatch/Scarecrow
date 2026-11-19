@@ -267,7 +267,7 @@ function row(mhz,busy,floor,rssi){let tr=document.getElementById('c'+mhz);
 // ---- spectrum waterfall (one row per sweep, newest on top) ----
 let wfctx=null,WFn=0;
 function wfColor(r){let p=Math.max(0,Math.min(1,(r+110)/70));           // -110 floor .. -40 hot
- const S=[[6,7,11],[46,110,140],[224,184,76],[255,77,94]];let g=p*3,i=g|0,t=g-i;if(i>2){i=2;t=1;}
+ const S=[[14,28,58],[46,120,150],[224,184,76],[255,77,94]];let g=p*3,i=g|0,t=g-i;if(i>2){i=2;t=1;}
  const a=S[i],b=S[i+1]||a;return`rgb(${a[0]+(b[0]-a[0])*t|0},${a[1]+(b[1]-a[1])*t|0},${a[2]+(b[2]-a[2])*t|0})`;}
 function wfInit(keys){const c=$('#wf');c.width=c.clientWidth||320;c.height=150;wfctx=c.getContext('2d');WFn=keys.length;
  const b=$('#wfband');if(b)b.textContent=parseFloat(keys[0]).toFixed(0)+'–'+parseFloat(keys[keys.length-1]).toFixed(0)+' MHz';}
@@ -276,6 +276,10 @@ function drawWaterfall(ro){if(!ro)return;const keys=Object.keys(ro).sort((a,b)=>
  const c=wfctx.canvas,n=keys.length,cw=c.width/n,rh=3;
  wfctx.drawImage(c,0,rh);                                              // scroll down
  for(let i=0;i<n;i++){wfctx.fillStyle=wfColor(parseFloat(ro[keys[i]]));wfctx.fillRect(i*cw|0,0,Math.ceil(cw),rh);}}
+// Fast feed: poll live per-channel RSSI ~4x/s while MONITOR is visible.
+setInterval(()=>{const mon=document.getElementById('mon');if(!mon||!mon.classList.contains('sel'))return;
+ fetch('/state.json').then(r=>r.json()).then(s=>{if(!s.channels)return;
+  const ro={};s.channels.forEach(c=>ro[c.mhz]=c.rssi);drawWaterfall(ro);}).catch(()=>{});},250);
 function add(cls,txt){const d=document.createElement('div');d.className=cls;
  d.textContent=new Date().toLocaleTimeString()+'  '+txt;$('#log').prepend(d);
  while($('#log').childElementCount>200)$('#log').lastChild.remove();}
@@ -400,7 +404,7 @@ function beep(r){if(!actx)return;const p=pct(r);
 function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
  if(o.t==='fox'){foxUpdate(o.rssi);}
  else if(o.t==='sweep'){$('#sw').textContent=o.n;for(const m in o.occ)
-   row(m,o.occ[m],(window._fl&&window._fl[m])??'--',o.rssi?o.rssi[m]:null);drawWaterfall(o.rssi);}
+   row(m,o.occ[m],(window._fl&&window._fl[m])??'--',o.rssi?o.rssi[m]:null);}
  else if(o.t==='busy'){add('busy',`busy ${o.mhz}  ${o.rssi}dBm (floor ${o.floor})`);
    (window._fl=window._fl||{})[(+o.mhz).toFixed(2)]=o.floor;}
  else if(o.t==='burst'){add('burst',`burst ${o.mhz}  ${o.edges} edges  ${o.dur_us}us  sig ${o.sig}  ${o.rssi}dBm`);}
