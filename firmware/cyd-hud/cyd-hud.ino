@@ -8,14 +8,27 @@
 //  Touch: a quick TAP cycles the view; a HOLD performs the view's action
 //  (in CONTROL, a hold steps the band and pushes it to the Evil Crow + nodes).
 //
-//  Display: TFT_eSPI (panel config via -D build flags: see build command).
-//  Touch:   XPT2046 PENIRQ on GPIO36 (LOW while touched) — tap/hold, no SPI.
+//  Board variants (pick one with a -D build flag; default BOARD_CYD28):
+//    BOARD_CYD28  ESP32-2432S024 / S028R — 2.4"/2.8" ILI9341 320x240,
+//                 resistive touch sensed via XPT2046 PENIRQ on GPIO36.
+//    BOARD_CYD32  ESP32-2432S032C(-I)    — 3.2" IPS ST7789 240x320 (inverted),
+//                 GT911 capacitive touch on I2C (SDA 33 / SCL 32), BL GPIO27.
+//  Display panel is configured by TFT_eSPI -D build flags (see build command);
+//  this file only differs per board in backlight pins + how touch is sensed.
+//  Touch gesture is the same everywhere: quick TAP cycles view, HOLD = action.
 // ============================================================================
+#if !defined(BOARD_CYD32) && !defined(BOARD_CYD28)
+#define BOARD_CYD28
+#endif
+
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <math.h>
+#ifdef BOARD_CYD32
+#include <Wire.h>
+#endif
 
 static TFT_eSPI tft = TFT_eSPI();
 
@@ -23,6 +36,40 @@ static const char* AP_SSID = "Scarecrow";
 static const char* AP_PASS = "watchonly";
 static const char* BASE    = "http://192.168.4.1";
 #define TOUCH_IRQ 36
+
+// ---- touch: resistive PENIRQ (CYD28) or GT911 capacitive (CYD32) -----------
+#ifdef BOARD_CYD32
+static uint8_t gtAddr = 0;                       // GT911 capacitive controller, I2C
+static bool gtTouched() {                        // true while a finger is down
+  if (!gtAddr) return false;
+  Wire.beginTransmission(gtAddr); Wire.write(0x81); Wire.write(0x4E);
+  if (Wire.endTransmission(false) != 0 || Wire.requestFrom(gtAddr, (uint8_t)1) != 1) return false;
+  uint8_t st = Wire.read();
+  if (st & 0x80) {                               // buffer ready -> clear it for the next report
+    Wire.beginTransmission(gtAddr); Wire.write(0x81); Wire.write(0x4E); Wire.write(0); Wire.endTransmission();
+  }
+  return (st & 0x80) && (st & 0x0F);
+}
+static void gtInit() {
+  pinMode(25, OUTPUT); pinMode(21, OUTPUT);      // reset pulse with INT low -> address 0x5D
+  digitalWrite(25, LOW); digitalWrite(21, LOW); delay(10); digitalWrite(25, HIGH); delay(10);
+  pinMode(21, INPUT); delay(50);
+  Wire.begin(33, 32, 400000);
+  for (uint8_t a : {0x5D, 0x14}) { Wire.beginTransmission(a); if (Wire.endTransmission() == 0) { gtAddr = a; break; } }
+  Serial.printf("# GT911 %s\n", gtAddr ? "found" : "NOT found");
+}
+#endif
+// Unified "is the screen being touched now?" — GT911 reports in bursts, so latch
+// briefly so a continuous press doesn't read as rapid tap-release-tap.
+static bool touchDown() {
+#ifdef BOARD_CYD32
+  static uint32_t lastT = 0;
+  if (gtTouched()) { lastT = millis(); return true; }
+  return (millis() - lastT < 80);
+#else
+  return digitalRead(TOUCH_IRQ) == LOW;
+#endif
+}
 
 // ---- Anubis Darkwatch palette (RGB565) -------------------------------------
 #define C_BG    0x0820
@@ -85,7 +132,7 @@ void drawHeader() {
   tft.setTextFont(2); tft.setTextColor(C_GOLD, C_BG); tft.drawString("DARKWATCH", 36, 25);
   tft.setTextDatum(TR_DATUM); tft.setTextFont(2);
   tft.setTextColor(wifiOk ? C_OK : C_WARN, C_BG);
-  tft.drawString(wifiOk ? viewTag() : "LINKING", SW - 10, 6);
+  tft.drawString(wifiOk ? "LINKED" : "LINKING", SW - 10, 6);   // link status, not view (dots show view)
   tft.setTextColor(C_DIM, C_BG);
   char l[36]; snprintf(l, sizeof(l), "%.2f MHz", targetMhz);
   tft.drawString(l, SW - 10, 24);
@@ -281,9 +328,14 @@ void splash() {
 }
 void setup() {
   Serial.begin(115200);
-  pinMode(21, OUTPUT); digitalWrite(21, HIGH);
-  pinMode(27, OUTPUT); digitalWrite(27, HIGH);
-  pinMode(TOUCH_IRQ, INPUT);
+#ifdef BOARD_CYD32
+  pinMode(27, OUTPUT); digitalWrite(27, HIGH);   // 3.2" backlight (GPIO21 is the GT911 INT)
+  gtInit();                                      // capacitive touch over I2C
+#else
+  pinMode(21, OUTPUT); digitalWrite(21, HIGH);   // 2.8" backlight
+  pinMode(27, OUTPUT); digitalWrite(27, HIGH);   // 2.4" backlight
+  pinMode(TOUCH_IRQ, INPUT);                     // resistive PENIRQ
+#endif
   tft.init(); tft.setRotation(1);
   SW = tft.width(); SH = tft.height();
   splash();
@@ -297,7 +349,7 @@ void loop() {
 
   // touch: quick tap = cycle view, hold (>700ms) = view action
   static bool tp = false; static uint32_t t0 = 0; static bool acted = false;
-  bool touched = (digitalRead(TOUCH_IRQ) == LOW);
+  bool touched = touchDown();
   if (touched && !tp) { t0 = millis(); acted = false; }
   if (touched && !acted && millis() - t0 > 700) { acted = true; viewAction(); }
   if (!touched && tp) { uint32_t dur = millis() - t0; if (!acted && dur >= 40 && dur < 500) cycleView(); }
