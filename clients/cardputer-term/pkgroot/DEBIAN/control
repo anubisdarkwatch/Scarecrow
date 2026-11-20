@@ -1,0 +1,13 @@
+Package: scarecrow-term
+Version: 0.1.0
+Section: hamradio
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.7)
+Maintainer: Anubis Darkwatch <anubis@anubisdarkwatch>
+Description: Scarecrow Terminal — RX-only sub-GHz collector console
+ Keyboard-driven console for the Evil Crow "Scarecrow" receive-only sub-GHz
+ sensor. Joins the collector's Wi-Fi AP and shows live direction-finding,
+ the signature library, band occupancy, and remote band control over the
+ firmware's existing HTTP endpoints. Receive-only: no transmit path.
+ Built for the M5Stack Cardputer Zero (Raspberry Pi CM0 / Linux).
