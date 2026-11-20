@@ -444,14 +444,19 @@ void dfTick() {
   lastDfTick = millis();
   webPush(String("{\"t\":\"node\",\"id\":\"0\",\"self\":true,\"rssi\":") + lastFoxRssi + ",\"age\":0}");
   for (int i = 0; i < 8; i++) {
-    bool d = false; int16_t rssi = 0; uint16_t te = 0; uint32_t age = 0; char id = 0; int8_t off = 0;
+    bool d = false, drop = false; int16_t rssi = 0; uint16_t te = 0; uint32_t age = 0; char id = 0; int8_t off = 0;
     portENTER_CRITICAL(&dfMux);
-    if (dfNodes[i].used && dfNodes[i].dirty) {
-      d = true; id = dfNodes[i].id; rssi = dfNodes[i].rssi; te = dfNodes[i].te; off = dfNodes[i].offset;
-      age = (millis() - dfNodes[i].lastMs) / 1000; dfNodes[i].dirty = false;
+    if (dfNodes[i].used) {
+      if (millis() - dfNodes[i].lastMs > NODE_TIMEOUT_MS) {       // rover went silent -> reap
+        drop = true; id = dfNodes[i].id; dfNodes[i].used = false; dfNodes[i].dirty = false;
+      } else if (dfNodes[i].dirty) {
+        d = true; id = dfNodes[i].id; rssi = dfNodes[i].rssi; te = dfNodes[i].te; off = dfNodes[i].offset;
+        age = (millis() - dfNodes[i].lastMs) / 1000; dfNodes[i].dirty = false;
+      }
     }
     portEXIT_CRITICAL(&dfMux);
-    if (d) webPush(String("{\"t\":\"node\",\"id\":\"") + id + "\",\"rssi\":" + (rssi + off)
+    if (drop)   webPush(String("{\"t\":\"nodedrop\",\"id\":\"") + id + "\"}");
+    else if (d) webPush(String("{\"t\":\"node\",\"id\":\"") + id + "\",\"rssi\":" + (rssi + off)
                  + ",\"off\":" + off + ",\"te\":" + te + ",\"age\":" + age + "}");
   }
 }

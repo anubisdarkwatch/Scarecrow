@@ -133,6 +133,11 @@ void drawLocate() {
       tft.drawString("stale", bx + bw - 70, y + 6);
     }
   }
+  // Self-only = no rover node present: say so, don't leave a blank where NODE A was.
+  if (nNodes == 1 && nodes[0].self) {
+    tft.setTextFont(1); tft.setTextDatum(MC_DATUM); tft.setTextColor(C_DIM, C_BG);
+    tft.drawString("standalone - no rover - single-point fox meter", SW / 2, top + rowH + 12);
+  }
 }
 void drawSigs() {
   int top = 50, rowH = 30, bx = 12, bw = SW - 24;

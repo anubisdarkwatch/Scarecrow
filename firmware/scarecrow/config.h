@@ -97,3 +97,4 @@ static const int   SCAN_PLAN_LEN = sizeof(SCAN_PLAN) / sizeof(SCAN_PLAN[0]);
 // LOCATE view (hottest node = nearest the source). Rovers must use the same
 // WiFi channel as AP_CHANNEL above. Still receive-only — ESP-NOW is WiFi.
 #define USE_DF         1              // 0 to drop DF collector entirely
+#define NODE_TIMEOUT_MS 12000          // a rover silent this long is dropped (NODE row vanishes)
