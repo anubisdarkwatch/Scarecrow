@@ -1,0 +1,58 @@
+name: Build flasher firmware
+
+# Rebuilds every device's merged bin and commits them into docs/firmware/ so the
+# GitHub Pages web flasher is always current. Runs when firmware source changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'firmware/**'
+      - 'scripts/build-all.sh'
+      - '.github/workflows/build-flasher.yml'
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR="$HOME/bin" sh
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Install ESP32 core + libraries
+        run: |
+          arduino-cli config init --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+          arduino-cli lib install \
+            "ArduinoJson@7.4.3" \
+            "RadioLib@7.1.2" \
+            "TFT_eSPI@2.5.43" \
+            "M5Cardputer@1.1.1" \
+            "ELECHOUSE_CC1101_SRC_DRV@1.0.0" \
+            "ESP Async WebServer@3.13.0" \
+            "Async TCP@3.6.1"
+
+      - name: Build all firmware
+        env:
+          LIBS: ${{ env.HOME }}/Arduino/libraries
+        run: |
+          export LIBS="$HOME/Arduino/libraries"
+          ./scripts/build-all.sh
+
+      - name: Commit refreshed bins
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/firmware
+          if git diff --cached --quiet; then
+            echo "No firmware changes."
+          else
+            git commit -m "CI: rebuild flasher firmware [skip ci]"
+            git push
+          fi
