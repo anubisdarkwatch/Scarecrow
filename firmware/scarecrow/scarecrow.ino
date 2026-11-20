@@ -10,6 +10,7 @@
 #include <Arduino.h>
 #include "ELECHOUSE_CC1101_SRC_DRV.h"
 #include "config.h"
+#include <LittleFS.h>     // internal-flash event log (survives reboot, no SD needed)
 #if USE_SD
   #include <SPI.h>
   #include <SD.h>
@@ -18,6 +19,11 @@
   File logFile;
 #endif
 #include "webui.h"   // read-only WiFi dashboard (stubs out when USE_WEB=0)
+#if USE_DF
+  #include <esp_now.h>
+  #include <esp_wifi.h>
+  #include "df_packet.h"
+#endif
 
 // ------- module index helpers (dual-module fork uses setModul 0/1) ----------
 #define MOD_A 0   // CC1 — scanner
@@ -31,6 +37,9 @@
 uint32_t lastSelfTest = 0;
 uint32_t lastFox = 0;
 float    watchFreq = WATCH_FREQ_MHZ;   // Module B park freq — runtime-tunable
+#if USE_DF
+int16_t  lastFoxRssi = -120;           // EC's own watch RSSI, shared with DF
+#endif
 void moduleSelfTest(byte modul, const char* name);   // defined after emit()
 void setWatchFreq(float f);                          // defined after emit()
 float getWatchFreq() { return watchFreq; }
@@ -58,12 +67,16 @@ void IRAM_ATTR onEdge() {
 // ---------------------------------------------------------------------------
 //  Scanner state
 // ---------------------------------------------------------------------------
-int16_t  floorDb[SCAN_PLAN_LEN];             // EWMA noise floor per channel
+int16_t  floorDb[SCAN_PLAN_LEN];             // asymmetric noise floor per channel
 int16_t  lastRssi[SCAN_PLAN_LEN];            // most recent live RSSI per channel
+bool     chBusy[SCAN_PLAN_LEN] = {false};    // hysteretic busy state per channel
 bool     seeded = false;
 uint8_t  jamStreak = 0;
+bool     jamActive = false;                  // currently announcing a jam
+uint32_t lastJamFire = 0;                    // last jam announcement (refire throttle)
+uint32_t lastOccDecay = 0;                   // occupancy-score decay timer
 uint32_t lastReport = 0;
-uint32_t busyAccum[SCAN_PLAN_LEN];           // occupancy counter per channel
+uint32_t busyAccum[SCAN_PLAN_LEN];           // rolling occupancy score per channel (decays)
 uint32_t sweeps = 0;
 
 // ---------------------------------------------------------------------------
@@ -82,6 +95,15 @@ void emit(const String& line, bool ui = false) {
 // Snapshot for the dashboard's initial load / reconnect.
 String buildStateJson() {
   String s = String("{\"watch_mhz\":") + String(watchFreq, 2)
+           + ",\"fw\":\"" FW_VERSION "\""
+           + ",\"ssid\":\"" AP_SSID "\""
+           + ",\"ip\":\"" + webApIp() + "\""
+           + ",\"sd\":" +
+#if USE_SD
+             String(sdOk ? "true" : "false")
+#else
+             "false"
+#endif
            + ",\"sweeps\":" + sweeps + ",\"channels\":[";
   for (int i = 0; i < SCAN_PLAN_LEN; i++) {
     if (i) s += ",";
@@ -116,6 +138,9 @@ void setWatchFreq(float f) {
   ELECHOUSE_cc1101.SetRx();
   ELECHOUSE_cc1101.setModul(MOD_A);
   emit(String("{\"t\":\"watch\",\"mhz\":") + String(watchFreq, 2) + "}", true);
+#if USE_DF
+  cfgBroadcast();                 // push the new band to rover nodes right away
+#endif
 }
 
 // Fast RSSI on the fox/watch frequency, pushed to the UI only (not serial/SD).
@@ -130,6 +155,9 @@ void foxTick() {
     delayMicroseconds(200);
   }
   ELECHOUSE_cc1101.setModul(MOD_A);
+#if USE_DF
+  lastFoxRssi = fr;                            // feed EC's own node reading
+#endif
   webPush(String("{\"t\":\"fox\",\"mhz\":") + String(watchFreq, 2)
         + ",\"rssi\":" + fr + "}");            // UI-only live stream
 }
@@ -144,6 +172,7 @@ void foxTick() {
 // ===========================================================================
 #define SIG_MAX        48
 #define SIG_TE_TOL_US  90     // two bursts are "same" if |te| within this
+#define SIG_HIST       24     // RSSI history samples kept per signature (sparkline)
 
 struct Sig {
   bool     used;
@@ -152,6 +181,9 @@ struct Sig {
   uint32_t count;
   int16_t  lastRssi;
   uint32_t firstMs, lastMs;
+  uint16_t freq_x100;          // band last heard on (MHz * 100)
+  int8_t   hist[SIG_HIST];     // ring of recent RSSI (dBm, clamped int8)
+  uint8_t  histHead, histLen;  // ring cursor + fill
   char     label[18];
 };
 Sig  sigs[SIG_MAX];
@@ -181,6 +213,11 @@ int sigIngest(uint16_t te, uint16_t n, int16_t rssi, bool *isNew) {
     *isNew = true;
   } else *isNew = false;
   sigs[id].count++; sigs[id].lastRssi = rssi; sigs[id].lastMs = millis();
+  sigs[id].freq_x100 = (uint16_t)(watchFreq * 100.0f + 0.5f);
+  int8_t rc = (int8_t)(rssi < -128 ? -128 : (rssi > 0 ? 0 : rssi));   // clamp to int8
+  sigs[id].hist[sigs[id].histHead] = rc;
+  sigs[id].histHead = (sigs[id].histHead + 1) % SIG_HIST;
+  if (sigs[id].histLen < SIG_HIST) sigs[id].histLen++;
   if (n < sigs[id].nmin) sigs[id].nmin = n;
   if (n > sigs[id].nmax) sigs[id].nmax = n;
   return id;
@@ -224,6 +261,33 @@ void sigsLoad() {
 #endif
 }
 
+void sigsClear() {                              // forget the whole signature library
+  for (int i = 0; i < SIG_MAX; i++) sigs[i] = Sig{};
+  sigsDirty = true;
+}
+// ---------------------------------------------------------------------------
+//  Passive protocol-family hinting. We only have the base symbol time (te),
+//  the edge-count range, and the band — we do NOT demodulate bits. So this is
+//  a coarse "looks like" classifier for naming help, never a decode. Windows
+//  are deliberately broad and labeled as classes, not identifications.
+// ---------------------------------------------------------------------------
+struct ProtoHint { uint16_t teLo, teHi; const char *name; };
+static const ProtoHint PROTO_TBL[] = {
+  { 120,  220, "PT2262/PT2240-class" },
+  { 220,  300, "PT2262-class remote" },
+  { 300,  430, "EV1527-class remote" },     // most garage/gate/alarm fobs
+  { 430,  620, "Holtek/CAME-class" },
+  { 620,  980, "weather-station-class" },
+  { 980, 1600, "slow-OOK sensor" },
+};
+String sigGuessName(uint16_t te, uint16_t nmin, uint16_t nmax, float mhz) {
+  // band-specific shortcuts first
+  if (mhz > 314.0f && mhz < 316.0f && te < 180) return "TPMS/car-sensor (315)";
+  if (mhz > 867.0f && mhz < 869.5f && te < 260) return "EU-ISM device (868)";
+  for (unsigned i = 0; i < sizeof(PROTO_TBL)/sizeof(PROTO_TBL[0]); i++)
+    if (te >= PROTO_TBL[i].teLo && te < PROTO_TBL[i].teHi) return String(PROTO_TBL[i].name);
+  return "";
+}
 String buildSigsJson() {
   String s = "{\"sigs\":[";
   bool first = true;
@@ -233,7 +297,27 @@ String buildSigsJson() {
        + ",\"nmin\":" + sigs[i].nmin + ",\"nmax\":" + sigs[i].nmax
        + ",\"count\":" + sigs[i].count + ",\"rssi\":" + sigs[i].lastRssi
        + ",\"age\":" + ((millis() - sigs[i].lastMs) / 1000)
+       + ",\"guess\":\"" + sigGuessName(sigs[i].te, sigs[i].nmin, sigs[i].nmax, sigs[i].freq_x100/100.0f) + "\""
        + ",\"label\":\"" + String(sigs[i].label) + "\"}";
+  }
+  s += "]}"; return s;
+}
+// Full detail for one signature: timing, band, timeline, RSSI history (oldest->newest).
+String buildSigDetailJson(int id) {
+  if (id < 0 || id >= SIG_MAX || !sigs[id].used) return "{\"ok\":false}";
+  Sig &g = sigs[id];
+  String s = "{\"ok\":true,\"id\":" + String(id)
+           + ",\"te\":" + g.te + ",\"nmin\":" + g.nmin + ",\"nmax\":" + g.nmax
+           + ",\"count\":" + g.count + ",\"rssi\":" + g.lastRssi
+           + ",\"freq\":" + String(g.freq_x100 / 100.0f, 2)
+           + ",\"firstage\":" + ((millis() - g.firstMs) / 1000)
+           + ",\"lastage\":" + ((millis() - g.lastMs) / 1000)
+           + ",\"guess\":\"" + sigGuessName(g.te, g.nmin, g.nmax, g.freq_x100/100.0f) + "\""
+           + ",\"label\":\"" + String(g.label) + "\",\"hist\":[";
+  for (uint8_t k = 0; k < g.histLen; k++) {         // unroll ring oldest -> newest
+    uint8_t idx = (g.histHead + SIG_MAX * SIG_HIST - g.histLen + k) % SIG_HIST;
+    if (k) s += ",";
+    s += String((int)g.hist[idx]);
   }
   s += "]}"; return s;
 }
@@ -250,6 +334,137 @@ void sigForget(int id) {
   sigs[id].used = false; sigsSave();
   webPush(String("{\"t\":\"sigdel\",\"id\":")+id+"}");
 }
+
+// ===========================================================================
+//  EVENT LOG — rolling CSV on internal flash (LittleFS). Survives reboot,
+//  needs no SD card. One row per signature detection; downloadable from the
+//  web UI as /log.csv. Buffered in RAM and flushed off the hot path.
+// ===========================================================================
+#define LOG_PATH   "/log.csv"
+#define LOG_CAP    262144UL     // ~256 KB hard cap; stops appending when reached
+#define LOG_HDR    "sec,event,id,te_us,rssi_dbm,mhz\n"
+bool     fsOk = false;
+bool     logFull = false;
+uint32_t logBytes = 0;
+String   logBuf;
+uint32_t lastLogFlush = 0;
+
+void logInit() {
+  fsOk = LittleFS.begin(true);          // format-on-fail: first boot provisions FS
+  if (!fsOk) return;
+  if (!LittleFS.exists(LOG_PATH)) {
+    File f = LittleFS.open(LOG_PATH, FILE_WRITE);
+    if (f) { f.print(LOG_HDR); f.close(); }
+  }
+  File f = LittleFS.open(LOG_PATH, FILE_READ);
+  if (f) { logBytes = f.size(); f.close(); }
+  logFull = (logBytes >= LOG_CAP);
+}
+void logEvent(const char *ev, int id, uint16_t te, int16_t rssi, float mhz) {
+  if (!fsOk || logFull) return;
+  logBuf += String(millis() / 1000) + "," + ev + "," + id + "," + te + ","
+          + rssi + "," + String(mhz, 2) + "\n";
+  if (logBuf.length() > 400) { logBuf.reserve(logBuf.length()); }  // nudge, avoid churn
+}
+void logFlush() {
+  if (!fsOk || !logBuf.length()) return;
+  if (logBytes + logBuf.length() > LOG_CAP) { logFull = true; logBuf = ""; return; }
+  File f = LittleFS.open(LOG_PATH, FILE_APPEND);
+  if (!f) { logBuf = ""; return; }
+  f.print(logBuf); logBytes += logBuf.length(); f.close();
+  logBuf = ""; lastLogFlush = millis();
+}
+void logClear() {
+  logBuf = "";
+  if (!fsOk) return;
+  File f = LittleFS.open(LOG_PATH, FILE_WRITE);
+  if (f) { f.print(LOG_HDR); f.close(); }
+  logBytes = strlen(LOG_HDR); logFull = false;
+}
+String logStatusJson() {
+  return String("{\"ok\":") + (fsOk ? "true" : "false")
+       + ",\"bytes\":" + logBytes + ",\"cap\":" + LOG_CAP
+       + ",\"full\":" + (logFull ? "true" : "false") + "}";
+}
+
+// ===========================================================================
+//  DIRECTION FINDING — collector for ESP-NOW rover nodes
+//  Rovers broadcast {node, rssi, te} on the target freq. We rank them; hottest
+//  node is nearest the source. The Evil Crow itself is node "0" (the anchor),
+//  reported from its own Module-B watch RSSI.
+// ===========================================================================
+#if USE_DF
+struct DfNode { bool used; char id; int16_t rssi; uint16_t te; uint32_t lastMs; uint32_t seq; bool dirty; int8_t offset; };
+DfNode dfNodes[8];
+uint32_t lastDfTick = 0;
+portMUX_TYPE dfMux = portMUX_INITIALIZER_UNLOCKED;
+
+void onDfRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  if (len < (int)sizeof(DfPacket)) return;
+  DfPacket p; memcpy(&p, data, sizeof(p));
+  if (p.magic != DF_MAGIC) return;
+  portENTER_CRITICAL(&dfMux);
+  int idx = -1;
+  for (int i = 0; i < 8; i++) if (dfNodes[i].used && dfNodes[i].id == p.node) { idx = i; break; }
+  if (idx < 0) for (int i = 0; i < 8; i++) if (!dfNodes[i].used) { dfNodes[i].used = true; dfNodes[i].id = p.node; idx = i; break; }
+  if (idx >= 0) {
+    dfNodes[idx].rssi = p.rssi;
+    if (p.kind == DF_KIND_BURST) dfNodes[idx].te = p.te;
+    dfNodes[idx].lastMs = millis(); dfNodes[idx].seq = p.seq; dfNodes[idx].dirty = true;
+  }
+  portEXIT_CRITICAL(&dfMux);
+}
+
+// Per-node RSSI calibration offset (dBm) from the web UI, so an amplified rover
+// and a plain one compare fairly in the ranking.
+void setNodeCal(char id, int off) {
+  if (off < -40) off = -40; if (off > 40) off = 40;
+  portENTER_CRITICAL(&dfMux);
+  for (int i = 0; i < 8; i++) if (dfNodes[i].used && dfNodes[i].id == id) { dfNodes[i].offset = (int8_t)off; dfNodes[i].dirty = true; }
+  portEXIT_CRITICAL(&dfMux);
+}
+
+String buildNodesJson() {
+  String s = String("{\"target\":") + String(watchFreq, 2)
+           + ",\"nodes\":[{\"id\":\"0\",\"self\":true,\"rssi\":" + lastFoxRssi + ",\"age\":0}";
+  for (int i = 0; i < 8; i++) if (dfNodes[i].used)
+    s += ",{\"id\":\"" + String(dfNodes[i].id) + "\",\"rssi\":" + (dfNodes[i].rssi + dfNodes[i].offset)
+       + ",\"off\":" + dfNodes[i].offset
+       + ",\"te\":" + dfNodes[i].te + ",\"age\":" + ((millis() - dfNodes[i].lastMs) / 1000) + "}";
+  s += "]}"; return s;
+}
+
+// Broadcast the current watch band so every rover node retunes to follow it.
+void cfgBroadcast() {
+  static uint8_t bcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+  CfgPacket c; c.magic = DF_MAGIC; c.kind = DF_KIND_CFG; c.watch_mhz = watchFreq;
+  esp_now_send(bcast, (uint8_t*)&c, sizeof(c));
+}
+
+uint32_t lastCfgBcast = 0;
+void dfTick() {
+  if (millis() - lastCfgBcast > 2000) { lastCfgBcast = millis(); cfgBroadcast(); }
+  if (millis() - lastDfTick < 250) return;
+  lastDfTick = millis();
+  webPush(String("{\"t\":\"node\",\"id\":\"0\",\"self\":true,\"rssi\":") + lastFoxRssi + ",\"age\":0}");
+  for (int i = 0; i < 8; i++) {
+    bool d = false, drop = false; int16_t rssi = 0; uint16_t te = 0; uint32_t age = 0; char id = 0; int8_t off = 0;
+    portENTER_CRITICAL(&dfMux);
+    if (dfNodes[i].used) {
+      if (millis() - dfNodes[i].lastMs > NODE_TIMEOUT_MS) {       // rover went silent -> reap
+        drop = true; id = dfNodes[i].id; dfNodes[i].used = false; dfNodes[i].dirty = false;
+      } else if (dfNodes[i].dirty) {
+        d = true; id = dfNodes[i].id; rssi = dfNodes[i].rssi; te = dfNodes[i].te; off = dfNodes[i].offset;
+        age = (millis() - dfNodes[i].lastMs) / 1000; dfNodes[i].dirty = false;
+      }
+    }
+    portEXIT_CRITICAL(&dfMux);
+    if (drop)   webPush(String("{\"t\":\"nodedrop\",\"id\":\"") + id + "\"}");
+    else if (d) webPush(String("{\"t\":\"node\",\"id\":\"") + id + "\",\"rssi\":" + (rssi + off)
+                 + ",\"off\":" + off + ",\"te\":" + te + ",\"age\":" + age + "}");
+  }
+}
+#endif
 
 // ---------------------------------------------------------------------------
 //  Radio bring-up — RX ONLY
@@ -295,10 +510,21 @@ void setup() {
   if (sdOk) logFile = SD.open("/scarecrow.ndjson", FILE_APPEND);
 #endif
   sigsLoad();                 // restore saved signature library (if SD present)
+  logInit();                  // mount LittleFS + open rolling event log
 
   initScanner();
   initListener();
   webSetup();
+#if USE_DF
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(onDfRecv);              // AP channel = AP_CHANNEL
+    static uint8_t bcast[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, bcast, 6);
+    peer.channel = AP_CHANNEL; peer.encrypt = false;
+    esp_now_add_peer(&peer);                         // so we can push band config out
+  }
+#endif
 
   for (int i = 0; i < SCAN_PLAN_LEN; i++) { floorDb[i] = -110; lastRssi[i] = -127; busyAccum[i] = 0; }
 
@@ -306,8 +532,9 @@ void setup() {
   moduleSelfTest(MOD_B, "B");
   ELECHOUSE_cc1101.setModul(MOD_A);   // leave scanner selected
 
-  emit(String("{\"t\":\"boot\",\"fw\":\"scarecrow-0.8\",\"tx\":false,")
-     + "\"channels\":" + SCAN_PLAN_LEN
+  emit(String("{\"t\":\"boot\",\"fw\":\"" FW_VERSION "\",\"tx\":false,")
+     + "\"ssid\":\"" AP_SSID "\""
+     + ",\"channels\":" + SCAN_PLAN_LEN
      + ",\"watch_mhz\":" + String(watchFreq, 2)
      + ",\"ap_ip\":\"" + webApIp() + "\""
      + ",\"sd\":" +
@@ -343,33 +570,58 @@ void doSweep() {
     lastRssi[i] = rssi;                         // live value for the dashboard
 
     if (!seeded) { floorDb[i] = rssi; }        // first pass seeds the floor
-    bool busy = (rssi > floorDb[i] + BUSY_MARGIN_DB);
+
+    // Hysteretic busy: cross the margin to go hot, fall well below it to go quiet,
+    // so a signal hovering near threshold doesn't flicker every sweep.
+    int16_t enterLvl = floorDb[i] + BUSY_MARGIN_DB;
+    if (!chBusy[i] && rssi > enterLvl)                     chBusy[i] = true;
+    else if (chBusy[i] && rssi < enterLvl - BUSY_HYST_DB)  chBusy[i] = false;
+    bool busy = chBusy[i];
 
     if (busy) {
       hotThisSweep++;
-      busyAccum[i]++;
+      busyAccum[i] += OCC_HIT;                 // rolling occupancy score (decays elsewhere)
       emit(String("{\"t\":\"busy\",\"mhz\":") + String(SCAN_PLAN[i], 2)
          + ",\"rssi\":" + rssi + ",\"floor\":" + floorDb[i] + "}");
     } else {
-      // only adapt the floor on quiet reads, so a real signal can't drag it up
-      floorDb[i] += (rssi - floorDb[i]) >> FLOOR_EWMA_SHIFT;
+      // Asymmetric floor: drop fast toward a quieter level, creep up slowly, so a
+      // lingering sub-threshold signal can't inflate the floor and blind the channel.
+      int sh = (rssi < floorDb[i]) ? FLOOR_DN_SHIFT : FLOOR_UP_SHIFT;
+      floorDb[i] += (rssi - floorDb[i]) >> sh;
     }
     if (rssi > peak) { peak = rssi; peakCh = i; }
   }
   seeded = true;
   sweeps++;
 
-  // Broadband jam heuristic: many channels hot at once, several sweeps running.
-  if (hotThisSweep >= JAM_MIN_CHANNELS) {
-    if (++jamStreak >= JAM_MIN_SWEEPS) {
-      emit(String("{\"t\":\"alarm\",\"kind\":\"broadband_interference\",")
-         + "\"hot\":" + hotThisSweep + ",\"peak_mhz\":" + String(SCAN_PLAN[peakCh], 2)
-         + ",\"peak_rssi\":" + peak + "}", true);
-      jamStreak = JAM_MIN_SWEEPS;              // latch; keep firing while present
+  // Broadband jam heuristic: many channels hot at once, sustained, AND the hottest
+  // channel actually loud (absolute gate rejects quiet false-hot). Announce once on
+  // onset, re-announce at most every JAM_REFIRE_MS while present, and emit one clear.
+  bool jamNow = (hotThisSweep >= JAM_MIN_CHANNELS) && (peak >= JAM_MIN_PEAK_DBM);
+  if (jamNow) {
+    if (jamStreak < 255) jamStreak++;
+    if (jamStreak >= JAM_MIN_SWEEPS) {
+      uint32_t now = millis();
+      if (!jamActive || now - lastJamFire >= JAM_REFIRE_MS) {
+        jamActive = true; lastJamFire = now;
+        emit(String("{\"t\":\"alarm\",\"kind\":\"broadband_interference\",")
+           + "\"hot\":" + hotThisSweep + ",\"peak_mhz\":" + String(SCAN_PLAN[peakCh], 2)
+           + ",\"peak_rssi\":" + peak + "}", true);
+      }
     }
   } else {
-    jamStreak = 0;
+    if (jamActive) emit("{\"t\":\"alarmclear\"}", true);   // announce the all-clear once
+    jamActive = false; jamStreak = 0;
   }
+}
+
+// Occupancy score decays geometrically so the MONITOR view tracks recent activity,
+// not a lifetime total. ~5 steps per half-life -> halves every OCC_HALFLIFE_MS.
+void occDecay() {
+  uint32_t step = OCC_HALFLIFE_MS / 5;
+  if (millis() - lastOccDecay < step) return;
+  lastOccDecay = millis();
+  for (int i = 0; i < SCAN_PLAN_LEN; i++) busyAccum[i] -= (busyAccum[i] >> 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +672,7 @@ void reapBurst() {
   int id = sigIngest(te, n, rssi, &isNew);
   if (id >= 0) {
     sigsDirty = true;
+    logEvent(isNew ? "new" : "hit", id, te, rssi, watchFreq);   // rolling flash log
     if (isNew)   // noteworthy -> serial/SD/UI
       emit(String("{\"t\":\"newsig\",\"id\":") + id + ",\"te\":" + te
          + ",\"edges\":" + n + ",\"rssi\":" + rssi + "}", true);
@@ -458,7 +711,12 @@ void loop() {
   reapBurst();      // non-blocking; drains Module B's ISR buffer
   foxTick();        // fast RSSI on the fox freq -> UI
   maybeReport();
+  occDecay();                                                  // age out occupancy scores
   if (sigsDirty && millis() - lastSigSave > 3000) sigsSave();  // debounced persist
+  if (logBuf.length() && millis() - lastLogFlush > 4000) logFlush();  // debounced log flush
+#if USE_DF
+  dfTick();         // rank rover nodes -> LOCATE view
+#endif
 
   if (millis() - lastSelfTest > 5000) {   // module health every 5s
     lastSelfTest = millis();

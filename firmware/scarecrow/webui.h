@@ -9,13 +9,22 @@
 #if USE_WEB
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include <LittleFS.h>
 
 extern String buildStateJson();     // provided by the main sketch
 extern void   setWatchFreq(float);  // retune Module B (fox target)
 extern float  getWatchFreq();
 extern String buildSigsJson();      // signature library
+extern String buildSigDetailJson(int); // one signature: timeline + RSSI history
 extern void   sigLabel(int, String);
 extern void   sigForget(int);
+extern void   sigsClear();          // forget the whole signature library
+extern String logStatusJson();      // flash event-log status (bytes/cap/full)
+extern void   logClear();           // wipe the flash event log
+#if USE_DF
+extern String buildNodesJson();     // direction-finding node table
+extern void   setNodeCal(char, int); // per-node RSSI calibration offset (dBm)
+#endif
 
 static AsyncWebServer  server(80);
 static AsyncEventSource events("/events");
@@ -23,7 +32,15 @@ static AsyncEventSource events("/events");
 static const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Scarecrow · Anubis Darkwatch</title><style>
+<title>Scarecrow · Anubis Darkwatch</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath d='M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z' fill='%23e0b84c'/%3E%3Ccircle cx='15' cy='28' r='1.7' fill='%2306070b'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%2306070b'/%3E%3Cpath d='M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z' fill='%23e0b84c'/%3E%3Ccircle cx='15' cy='28' r='1.7' fill='%2306070b'/%3E%3C/svg%3E">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#06070b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Scarecrow">
+<style>
 :root{
  --bg:#06070b; --bg2:#0b0d15; --panel:#0e1018; --panel2:#121521;
  --ink:#e9ecf4; --dim:#6b7186; --line:#1d2130;
@@ -117,17 +134,82 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
 .foot .tx{color:var(--ok)}
 /* signatures */
 .siglist{display:flex;flex-direction:column;gap:9px;margin-top:4px}
+.ndcal{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--dim)}
+.ndcal button{background:var(--line);color:var(--ink);border:0;border-radius:4px;width:28px;height:23px;
+ font-size:15px;line-height:1;cursor:pointer}
+.calofflbl{min-width:62px;letter-spacing:.03em}
+.dangbtn{background:transparent;color:var(--hot);border:1px solid var(--hot);border-radius:7px;
+ padding:7px 12px;font-size:12px;letter-spacing:.06em;cursor:pointer;margin-bottom:10px}
 .sigrow{background:#090b12;border:1px solid var(--line);border-radius:12px;padding:12px}
 .sigmain{display:flex;align-items:center;gap:8px}
 .siglabel{flex:1;background:#05060a;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:9px;font:inherit}
 .signew{color:#06070b;background:var(--gold);border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;letter-spacing:.12em}
-.sigmeta{color:var(--dim);font-size:12px;margin:9px 2px 10px}.sigmeta b{color:var(--ink)}
+.sigmeta{color:var(--dim);font-size:12px;margin:9px 2px 10px;cursor:pointer}.sigmeta b{color:var(--ink)}
 .sigacts{display:flex;gap:8px}.sigacts .btn{flex:1;padding:8px}
 .new{color:var(--gold)}
+.sigtools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+.sigtools .btn{padding:8px 12px;margin:0}.sigtools .dangbtn{margin:0 0 0 auto}
+/* signature detail modal */
+.modal{position:fixed;inset:0;background:rgba(3,4,7,.72);backdrop-filter:blur(3px);
+ display:none;align-items:flex-end;justify-content:center;z-index:20}
+.modal.open{display:flex}
+.sheet{background:var(--panel);border:1px solid var(--line);border-radius:16px 16px 0 0;
+ width:100%;max-width:560px;padding:18px 18px 26px;box-shadow:0 -8px 40px rgba(0,0,0,.6)}
+.sheethdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.sheethdr b{color:var(--ink);font-size:16px}
+.x{color:var(--dim);cursor:pointer;font-size:18px;padding:2px 8px}
+.smband{color:var(--dim);font-size:12px;margin-bottom:12px}.smband b{color:var(--gold)}
+.spark{width:100%;height:80px;background:#05060a;border:1px solid var(--line);border-radius:10px}
+.smstats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
+.smstats div{background:#090b12;border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.smstats span{display:block;color:var(--dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+.smstats b{color:var(--ink);font-size:15px}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
  background:var(--gold);color:#06070b;font-weight:700;padding:11px 18px;border-radius:11px;
  opacity:0;transition:.25s;z-index:9;pointer-events:none;letter-spacing:.04em;box-shadow:var(--glow)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* locate */
+.ndname{flex:1;letter-spacing:.08em}.ndrssi{color:var(--dim);font-size:12px}
+.sigrow.hot{border-color:var(--gold);box-shadow:0 0 16px rgba(224,184,76,.22)}
+.sigrow.hot .ndname{color:var(--gold)}
+/* ---- branding polish ---- */
+.rfarc{animation:radiate 2.6s ease-in-out infinite}
+.rfarc.a2{animation-delay:.7s}
+@keyframes radiate{0%,100%{opacity:.12}45%{opacity:.6}}
+.tbadge{display:inline-block;min-width:15px;margin-left:7px;padding:0 5px;border-radius:999px;
+ font-size:9.5px;line-height:15px;background:var(--line);color:var(--dim);vertical-align:middle;
+ letter-spacing:.04em;transition:.2s}
+.tab.sel .tbadge{background:rgba(224,184,76,.16);color:var(--gold)}
+.tbadge.live{background:rgba(53,214,164,.16);color:var(--ok)}
+.hdrspark{width:100%;height:26px;margin:0 0 12px;background:#05060a;border:1px solid var(--line);
+ border-radius:8px;display:block;box-shadow:inset 0 0 0 1px rgba(255,255,255,.01)}
+@keyframes sigflash{0%{background:rgba(224,184,76,.4)}100%{background:#090b12}}
+.sigrow.flash{animation:sigflash 1.3s ease-out}
+.sigrow{transition:opacity .6s}
+.dot.on{animation:beat 1.8s ease-in-out infinite}
+@keyframes beat{0%,100%{box-shadow:0 0 6px var(--ok)}50%{box-shadow:0 0 14px var(--ok),0 0 22px rgba(53,214,164,.4)}}
+.brand h1{background:linear-gradient(90deg,var(--ink),#c7ccda);-webkit-background-clip:text;background-clip:text}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;
+ font-size:10px;letter-spacing:.14em;border:1px solid var(--line)}
+.pill.rx{color:var(--ok);border-color:rgba(53,214,164,.4);background:rgba(53,214,164,.06)}
+.pill.rx::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.pill.ver{color:var(--gold);border-color:rgba(224,184,76,.3)}
+.tab{position:relative}
+.tab.sel::after{content:"";position:absolute;left:28%;right:28%;bottom:3px;height:2px;border-radius:2px;
+ background:var(--gold);box-shadow:0 0 8px var(--gold)}
+.card{position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;
+ background:linear-gradient(90deg,transparent,rgba(155,140,255,.5),transparent)}
+/* getting-started hint */
+.hint{background:linear-gradient(180deg,#121326,#0b0c17);border:1px solid rgba(155,140,255,.28);
+ border-radius:14px;padding:15px 16px;margin:14px 0;position:relative}
+.hint h3{margin:0 0 8px;font-size:12px;letter-spacing:.14em;color:var(--acc);text-transform:uppercase}
+.hint p{margin:5px 0;font-size:12.5px;color:#aeb4c7;line-height:1.55}
+.hint b{color:var(--ink)} .hint code{color:var(--gold);background:#05060a;padding:1px 6px;border-radius:5px}
+.hint .x{position:absolute;top:10px;right:12px}
+.idfoot{display:flex;gap:7px;flex-wrap:wrap;justify-content:center;margin-top:10px;
+ color:var(--dim);font-size:10.5px;letter-spacing:.06em}
+.idfoot span{white-space:nowrap} .idfoot b{color:var(--ink)}
 </style></head><body>
 <div class="scan"></div>
 <div class="app">
@@ -135,33 +217,50 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
   <svg class="mark" viewBox="0 0 48 48" fill="none">
    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
      <stop offset="0" stop-color="#b9adff"/><stop offset="1" stop-color="#6f5bff"/></linearGradient></defs>
-   <!-- RF arcs -->
-   <path d="M33 14a13 13 0 0 1 0 20" stroke="url(#g)" stroke-width="2" opacity=".55" stroke-linecap="round"/>
-   <path d="M37 10a19 19 0 0 1 0 28" stroke="url(#g)" stroke-width="2" opacity=".28" stroke-linecap="round"/>
+   <!-- RF arcs (listening) -->
+   <path class="rfarc" d="M33 14a13 13 0 0 1 0 20" stroke="url(#g)" stroke-width="2" opacity=".55" stroke-linecap="round"/>
+   <path class="rfarc a2" d="M37 10a19 19 0 0 1 0 28" stroke="url(#g)" stroke-width="2" opacity=".28" stroke-linecap="round"/>
+   <!-- scarecrow hat brim + crown -->
+   <path d="M6 18h18l-2 2.5H8z" fill="url(#g)" opacity=".9"/>
+   <path d="M11 18c0-4 2-7 4-7s4 3 4 7z" fill="url(#g)"/>
    <!-- crow head -->
-   <path d="M7 31c0-7 5-13 12-14l12-4c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z"
+   <path d="M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z"
      fill="url(#g)"/>
-   <circle cx="15" cy="27" r="1.7" fill="#06070b"/>
+   <circle cx="15" cy="28" r="1.7" fill="#06070b"/>
   </svg>
   <div class="brand"><h1>SCARECROW</h1><div class="sub">ANUBIS&nbsp;DARKWATCH</div></div>
   <div class="spacer"></div>
   <div class="live"><span id="dot" class="dot"></span><span id="livetxt">link</span></div>
  </header>
  <div class="statline">
-  <span class="tx">RX-ONLY</span>
+  <span class="pill rx">RX-ONLY</span>
+  <span class="pill ver" id="verpill">v--</span>
   <span>fox <b id="watch">--</b></span>
   <span><span id="sw">0</span> sweeps</span>
  </div>
+ <svg id="spark" class="hdrspark" viewBox="0 0 300 30" preserveAspectRatio="none"></svg>
 
  <div class="tabs">
   <div class="tab sel" data-v="mon">MONITOR</div>
   <div class="tab" data-v="fox">FOX HUNT</div>
-  <div class="tab" data-v="sig">SIGNATURES</div>
+  <div class="tab" data-v="sig">SIGNATURES<span class="tbadge" id="bsig">0</span></div>
+  <div class="tab" data-v="loc">LOCATE<span class="tbadge" id="bloc">solo</span></div>
  </div>
 
  <!-- MONITOR -->
  <div class="view sel" id="mon">
   <p id="alarm">⚠ BROADBAND INTERFERENCE</p>
+  <div class="hint" id="hint" style="display:none">
+   <span class="x" onclick="dismissHint()"><span class="dangbtn" style="margin:0;padding:3px 9px">dismiss</span></span>
+   <h3>Welcome to Scarecrow</h3>
+   <p>A <b>receive-only</b> sub-GHz sensor. It listens on your area's hot frequency and maps
+      what it hears &mdash; no transmit path anywhere in this firmware.</p>
+   <p><b>Fox hunt</b> a transmitter: open the <b>FOX&nbsp;HUNT</b> tab, set the frequency, and walk
+      toward the rising signal. <b>SIGNATURES</b> fingerprints the emitters it sees.</p>
+   <p><b>Add a node</b> for true direction finding: flash a rover (T&#8209;Embed&nbsp;CC1101) and power
+      it near the collector &mdash; it joins over ESP&#8209;NOW and the <b>LOCATE</b> tab ranks nodes live.
+      With no node, LOCATE still works as a single&#8209;point fox meter.</p>
+  </div>
   <div class="card"><h2>Radio self-test</h2><div id="selftest"></div></div>
   <div class="card"><h2>Channel occupancy</h2>
    <table id="occ"><thead><tr><th>MHz</th><th>RSSI</th><th>busy</th><th>floor</th><th>live</th></tr></thead>
@@ -215,11 +314,40 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
      Emitters grouped by base symbol timing (<b>te</b>). <b class="new">NEW</b> =
      first seen this session. Label the ones you recognise; unlabeled strangers
      that keep returning are worth a look. Saved to SD when present.</p>
+   <div class="sigtools">
+    <button class="btn" onclick="dlLog()">⤓ Download log</button>
+    <button class="btn ghost" onclick="clrLog()">Clear log</button>
+    <button class="dangbtn" onclick="forgetAll()">Forget all signatures</button>
+   </div>
+   <p class="foot" id="logstat" style="text-align:left;margin:2px 0 10px"></p>
+   <p class="foot" style="text-align:left;margin:-4px 0 10px">Tap a signature to see its history.</p>
    <div id="siglist" class="siglist"></div>
    <p class="foot" id="sigempty">No signatures yet — capture a burst on the fox frequency.</p>
   </div>
  </div>
+ <!-- signature detail modal -->
+ <div id="sigmodal" class="modal" onclick="if(event.target===this)closeSig()">
+  <div class="sheet">
+   <div class="sheethdr"><b id="smname"></b><span class="x" onclick="closeSig()">✕</span></div>
+   <div id="smband" class="smband"></div>
+   <svg id="smspark" viewBox="0 0 300 80" class="spark" preserveAspectRatio="none"></svg>
+   <div id="smstats" class="smstats"></div>
+  </div>
+ </div>
+ <!-- LOCATE -->
+ <div class="view" id="loc">
+  <div class="card"><h2>Node locator</h2>
+   <p class="foot" id="locmsg" style="text-align:left;margin:-4px 0 10px"></p>
+   <div id="nodelist" class="siglist"></div>
+  </div>
+ </div>
  <p class="foot"><span class="tx">No transmit path in this firmware.</span> Display &amp; tune only.</p>
+ <div class="idfoot">
+  <span>AP <b id="idssid">Scarecrow</b></span><span>·</span>
+  <span><b id="idip">—</b></span><span>·</span>
+  <span id="idfw">scarecrow</span><span>·</span>
+  <span>SD <b id="idsd">—</b></span>
+ </div>
 </div>
 <div id="toast" class="toast"></div>
 <script>
@@ -231,12 +359,15 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
  t.classList.add('sel');$('#'+t.dataset.v).classList.add('sel');});
 
 // ---- monitor: occupancy ----
+// heat colour shared by occupancy bars (teal cold -> gold -> crimson hot)
+function heatCss(p){return p>=.72?'var(--hot)':p>=.45?'var(--gold)':'var(--ok)';}
 function row(mhz,busy,floor,rssi){let tr=document.getElementById('c'+mhz);
  if(!tr){tr=document.createElement('tr');tr.id='c'+mhz;
   tr.innerHTML=`<td>${mhz}</td><td class="r">--</td><td class="b">0</td><td class="f">--</td>
   <td style="width:30%"><div class="bar"><i></i></div></td>`;occBody.appendChild(tr);}
  if(rssi!=null){tr.querySelector('.r').textContent=rssi;
-  tr.querySelector('.bar>i').style.width=Math.max(0,Math.min(100,(rssi+110)/80*100))+'%';}
+  const p=Math.max(0,Math.min(1,(rssi+110)/80)),bi=tr.querySelector('.bar>i');
+  bi.style.width=(p*100)+'%';bi.style.background=heatCss(p);}
  tr.querySelector('.b').textContent=busy;tr.querySelector('.f').textContent=floor;}
 function add(cls,txt){const d=document.createElement('div');d.className=cls;
  d.textContent=new Date().toLocaleTimeString()+'  '+txt;$('#log').prepend(d);
@@ -266,36 +397,160 @@ function foxUpdate(r){
  else if(ewF<ewS-0.8){t.className='trend cold';t.textContent='▼ COLDER ▼';}
  else{t.className='trend hold';t.textContent='— HOLD —';}
  fcount++; if(audioOn)beep(r);
+ pushSpk(r);
 }
 setInterval(()=>{$('#hz').textContent=fcount;fcount=0;},1000);
+// ---- header live-RSSI sparkline (the fox signal, breathing, from any tab) ----
+const SPK=[],SPKMAX=60;
+function pushSpk(r){SPK.push(r);if(SPK.length>SPKMAX)SPK.shift();drawSpark();}
+function drawSpark(){const sv=$('#spark');if(!sv||SPK.length<2)return;
+ const mn=Math.min(...SPK,-110),mx=Math.max(...SPK,-40),rng=(mx-mn)||1;
+ const pts=SPK.map((v,i)=>{const x=i/(SPK.length-1)*300,y=27-((v-mn)/rng)*24;
+  return x.toFixed(1)+','+y.toFixed(1);}).join(' ');
+ const last=SPK[SPK.length-1],lp=Math.max(0,Math.min(1,(last+110)/80));
+ const col=lp>=.72?'var(--hot)':lp>=.45?'var(--gold)':'var(--ok)';
+ sv.innerHTML='<polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="1.5" '
+  +'stroke-linejoin="round"/>';}
 function resetPeak(){peak=-200;$('#peakv').textContent='—';
  $('#peak').setAttribute('cx',24);$('#peak').setAttribute('cy',158);}
 
 // ---- signature library ----
 const SIG={};
-function sigMeta(d){return `te <b>${d.te}µs</b> &middot; edges ${d.nmin}`
- +(d.nmax&&d.nmax!=d.nmin?'–'+d.nmax:'')+` &middot; seen <b>${d.count}×</b> &middot; <b>${d.rssi}</b>dBm`;}
+// client-side mirror of the firmware's te windows, so SSE-added sigs show a hint
+// immediately; the server's band-aware guess wins whenever it's present.
+function guessName(te,srv){if(srv)return srv;te=+te;
+ if(te>=120&&te<220)return 'PT2262/PT2240-class';
+ if(te>=220&&te<300)return 'PT2262-class remote';
+ if(te>=300&&te<430)return 'EV1527-class remote';
+ if(te>=430&&te<620)return 'Holtek/CAME-class';
+ if(te>=620&&te<980)return 'weather-station-class';
+ if(te>=980&&te<1600)return 'slow-OOK sensor';return '';}
+function sigMeta(d){const g=guessName(d.te,d.guess);
+ return `te <b>${d.te}µs</b> &middot; edges ${d.nmin}`
+ +(d.nmax&&d.nmax!=d.nmin?'–'+d.nmax:'')+` &middot; seen <b>${d.count}×</b> &middot; <b>${d.rssi}</b>dBm`
+ +(g?` &middot; <span class="new">~ ${g}</span>`:'');}
 function renderSig(d){
  const s=SIG[d.id]=Object.assign({nmin:d.nmin,nmax:d.nmax,count:0,label:''},SIG[d.id]||{},d);
  $('#sigempty').style.display='none';
  let row=document.getElementById('sig'+d.id);
  if(!row){row=document.createElement('div');row.className='sigrow';row.id='sig'+d.id;
-  row.innerHTML=`<div class="sigmain"><input class="siglabel" id="lbl${d.id}" placeholder="unlabeled #${d.id}">
+  const ph=guessName(d.te,d.guess)||('unlabeled #'+d.id);
+  row.innerHTML=`<div class="sigmain"><input class="siglabel" id="lbl${d.id}" placeholder="${ph}">
    <span class="signew" style="display:none">NEW</span></div>
-   <div class="sigmeta"></div>
-   <div class="sigacts"><button class="btn ghost" onclick="labelSig(${d.id})">SAVE</button>
+   <div class="sigmeta" onclick="sigDetail(${d.id})"></div>
+   <div class="sigacts"><button class="btn ghost" onclick="sigDetail(${d.id})">DETAIL</button>
+   <button class="btn ghost" onclick="labelSig(${d.id})">SAVE</button>
    <button class="btn ghost" onclick="forgetSig(${d.id})">FORGET</button></div>`;
   $('#siglist').prepend(row);
   if(s.label)row.querySelector('.siglabel').value=s.label;}
  row.querySelector('.sigmeta').innerHTML=sigMeta(s);
- if(d.isNew)row.querySelector('.signew').style.display='inline';}
+ s.seen=Date.now()-((d.age||0)*1000);row.style.opacity='1';
+ if(d.isNew){row.querySelector('.signew').style.display='inline';
+  row.classList.remove('flash');void row.offsetWidth;row.classList.add('flash');}
+ updSigBadge();}
+function updSigBadge(){const b=$('#bsig');if(b)b.textContent=Object.keys(SIG).length;}
+// Signatures fade as they go quiet, brighten the instant they're heard again.
+function ageFade(){const now=Date.now();for(const id in SIG){const r=document.getElementById('sig'+id);
+ if(!r)continue;const age=(now-(SIG[id].seen||now))/1000;
+ r.style.opacity=age>180?'0.4':age>45?'0.68':'1';}}
+setInterval(ageFade,4000);
+// ---- signature detail (timeline + RSSI sparkline) ----
+function human(s){s=+s;if(s<90)return s+'s ago';if(s<5400)return Math.round(s/60)+'m ago';
+ if(s<172800)return Math.round(s/3600)+'h ago';return Math.round(s/86400)+'d ago';}
+function sigDetail(id){fetch('/sig.json?id='+id).then(r=>r.json()).then(d=>{
+ if(!d.ok)return;const nm=(SIG[id]&&SIG[id].label)||('unlabeled #'+id);
+ $('#smname').textContent=nm;
+ const gs=guessName(d.te,d.guess);
+ $('#smband').innerHTML='Band <b>'+d.freq.toFixed(2)+' MHz</b> &middot; te <b>'+d.te+'µs</b>'
+  +(gs?'<br><span style="color:var(--gold)">Looks like: '+gs+'</span> '
+      +'<span class="dangbtn" style="color:var(--acc);border-color:var(--acc);padding:2px 8px;margin:0" '
+      +'onclick="applyLabel('+id+',\''+gs.replace(/'/g,"")+'\')">use this name</span>':'');
+ // sparkline
+ const h=d.hist||[],sv=$('#smspark');
+ if(h.length>1){const mn=Math.min(...h),mx=Math.max(...h),rng=(mx-mn)||1;
+  const pts=h.map((v,i)=>{const x=i/(h.length-1)*300,y=74-((v-mn)/rng)*68;return x.toFixed(1)+','+y.toFixed(1);}).join(' ');
+  sv.innerHTML='<polyline points="'+pts+'" fill="none" stroke="var(--gold)" stroke-width="2"/>'
+   +'<text x="2" y="12" fill="var(--dim)" font-size="11">'+mx+'</text>'
+   +'<text x="2" y="78" fill="var(--dim)" font-size="11">'+mn+'</text>';}
+ else sv.innerHTML='<text x="150" y="44" fill="var(--dim)" font-size="12" text-anchor="middle">not enough samples yet</text>';
+ $('#smstats').innerHTML=
+  '<div><span>Last RSSI</span><b>'+d.rssi+' dBm</b></div>'
+  +'<div><span>Hits</span><b>'+d.count+'×</b></div>'
+  +'<div><span>Edge count</span><b>'+d.nmin+(d.nmax!=d.nmin?'–'+d.nmax:'')+'</b></div>'
+  +'<div><span>First seen</span><b>'+human(d.firstage)+'</b></div>'
+  +'<div><span>Last seen</span><b>'+human(d.lastage)+'</b></div>';
+ $('#sigmodal').classList.add('open');});}
+function closeSig(){$('#sigmodal').classList.remove('open');}
+// ---- event log ----
+function dlLog(){window.location='/log.csv';}
+function clrLog(){if(!confirm('Clear the on-device event log?'))return;
+ fetch('/log/clear').then(()=>{toast('log cleared');logStat();});}
+function logStat(){fetch('/log.json').then(r=>r.json()).then(d=>{const e=$('#logstat');if(!e)return;
+ if(!d.ok){e.textContent='Flash log unavailable.';return;}
+ const kb=(d.bytes/1024).toFixed(1),cap=(d.cap/1024).toFixed(0);
+ e.innerHTML='Event log: <b>'+kb+' KB</b> / '+cap+' KB'+(d.full?' <b class="new">FULL — download &amp; clear</b>':'');});}
+logStat();setInterval(logStat,10000);
 function labelSig(id){const v=document.getElementById('lbl'+id).value;
  fetch('/label?id='+id+'&name='+encodeURIComponent(v)).then(()=>toast('saved'));}
+function applyLabel(id,name){const i=document.getElementById('lbl'+id);if(i)i.value=name;
+ if(SIG[id])SIG[id].label=name;
+ fetch('/label?id='+id+'&name='+encodeURIComponent(name)).then(()=>{toast('named: '+name);closeSig();});}
 function forgetSig(id){fetch('/forget?id='+id).then(()=>{
- const r=document.getElementById('sig'+id);if(r)r.remove();delete SIG[id];});}
+ const r=document.getElementById('sig'+id);if(r)r.remove();delete SIG[id];updSigBadge();});}
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');
  clearTimeout(window._tt);window._tt=setTimeout(()=>t.classList.remove('show'),2200);}
 fetch('/sigs.json').then(r=>r.json()).then(d=>d.sigs.forEach(renderSig)).catch(()=>{});
+
+// ---- locate (direction finding) ----
+const NODES={};let curTarget='--';
+// A rover counts as active if we've heard from it in the last 12s.
+function activeRovers(){return Object.values(NODES).filter(n=>n.id!=='0'&&(Date.now()-(n.seen||0))<12000).length;}
+function updateLocateMode(){const m=$('#locmsg');const r=activeRovers();
+ const b=$('#bloc');if(b){b.textContent=r>0?r:'solo';b.classList.toggle('live',r>0);}
+ if(!m)return;
+ if(r===0){m.innerHTML='<b>Standalone.</b> This Evil Crow (anchor) is your single-point '
+   +'fox meter on <b>'+curTarget+'</b> — the bar below rises as you near the source. '
+   +'Add one or more rover nodes over ESP-NOW for multi-point direction finding.';}
+ else{m.innerHTML='<b>'+r+' rover'+(r>1?'s':'')+' active.</b> Hottest node is nearest the source. '
+   +'Target <b>'+curTarget+'</b>; <b>0</b> is this Evil Crow (anchor). Walk a rover and the bars '
+   +'re-rank live. Amplified nodes read hotter — calibrate before trusting the order across mixed radios.';}}
+function renderNode(d){NODES[d.id]=Object.assign(NODES[d.id]||{},d,{seen:Date.now()});const s=NODES[d.id];
+ let row=document.getElementById('nd'+d.id);
+ if(!row){row=document.createElement('div');row.className='sigrow';row.id='nd'+d.id;
+  row.innerHTML=`<div class="sigmain"><b class="ndname"></b><span class="ndrssi"></span></div>
+   <div class="foxbar" style="margin-top:9px"><i></i></div><div class="ndcal"></div>`;$('#nodelist').appendChild(row);}
+ row.querySelector('.ndname').textContent=d.id==='0'?'EVIL CROW · anchor':('NODE '+d.id);
+ row.querySelector('.ndrssi').textContent=s.rssi+' dBm'+(s.age>5?' · stale '+s.age+'s':'');
+ row.querySelector('.foxbar>i').style.width=Math.max(0,Math.min(100,(s.rssi+110)/80*100))+'%';
+ const cal=row.querySelector('.ndcal');                         // rover calibration offset
+ if(d.id!=='0'){const off=s.off||0;cal.style.display='flex';
+  cal.innerHTML=`<span class="calofflbl">cal ${off>0?'+':''}${off} dB</span>`+
+   `<button onclick="calNode('${d.id}',${off-1})">−</button><button onclick="calNode('${d.id}',${off+1})">+</button>`;
+ }else cal.style.display='none';
+ rankNodes();updateLocateMode();}
+function calNode(id,off){if(off<-40)off=-40;if(off>40)off=40;
+ fetch('/cal?id='+id+'&off='+off).then(()=>{if(NODES[id])NODES[id].off=off;});}
+function forgetAll(){if(!confirm('Forget every captured signature?'))return;
+ fetch('/forgetall').then(()=>{$('#siglist').innerHTML='';for(const k in SIG)delete SIG[k];
+  const e=$('#sigempty');if(e)e.style.display='';updSigBadge();});}
+function rankNodes(){const L=$('#nodelist');
+ [...L.children].sort((a,b)=>NODES[b.id.slice(2)].rssi-NODES[a.id.slice(2)].rssi)
+  .forEach((r,i,arr)=>{r.style.order=i;r.classList.toggle('hot',i===0&&arr.length>1);});}
+// Remove one rover (anchor 0 never drops) — fired by the collector's nodedrop
+// event the instant a rover goes silent, so NODE rows vanish, not just grey out.
+function dropNode(id){if(id==='0')return;const row=document.getElementById('nd'+id);
+ if(row)row.remove();delete NODES[id];rankNodes();updateLocateMode();}
+// Backstop sweep: also drop rovers we haven't heard from (in case a drop event is
+// missed), on a tighter window than the collector's reap so the UI never lags it.
+function sweepNodes(){const now=Date.now();
+ for(const id in NODES){if(id==='0')continue;const age=(now-NODES[id].seen)/1000;
+  const row=document.getElementById('nd'+id);
+  if(age>14){if(row)row.remove();delete NODES[id];continue;}
+  if(row)row.querySelector('.ndrssi').textContent=NODES[id].rssi+' dBm'+(age>6?' · stale '+Math.round(age)+'s':'');}
+ rankNodes();updateLocateMode();}
+setInterval(sweepNodes,3000);
+fetch('/nodes.json').then(r=>r.json()).then(d=>{if(d.target)curTarget=d.target+' MHz';
+ d.nodes.forEach(renderNode);updateLocateMode();}).catch(()=>updateLocateMode());
 
 const PRESETS=[315,390,418,433.92,868.3,915];
 const chips=$('#chips');
@@ -305,7 +560,8 @@ function markChip(f){document.querySelectorAll('.chip').forEach(c=>
  c.classList.toggle('sel',parseFloat(c.textContent)===parseFloat(f)));}
 function setFreq(){const v=parseFloat($('#freqin').value);if(v)sendFreq(v);}
 function sendFreq(f){fetch('/fox?mhz='+f).then(()=>{});}
-function setWatchUI(f){$('#watch').textContent=f+' MHz';$('#foxf').textContent=f;markChip(f);}
+function setWatchUI(f){$('#watch').textContent=f+' MHz';$('#foxf').textContent=f;markChip(f);
+ curTarget=f+' MHz';updateLocateMode();}
 
 // ---- audio beacon (classic fox-hunt beep: faster+higher = closer) ----
 let actx,audioOn=false,lastBeep=0;
@@ -333,14 +589,18 @@ function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
  else if(o.t==='burst'){add('burst',`burst ${o.mhz}  ${o.edges} edges  ${o.dur_us}us  sig ${o.sig}  ${o.rssi}dBm`);}
  else if(o.t==='alarm'){add('alm',`ALARM ${o.kind}  ${o.hot} hot  peak ${o.peak_mhz} ${o.peak_rssi}dBm`);
    $('#alarm').classList.add('on');clearTimeout(window._at);
-   window._at=setTimeout(()=>$('#alarm').classList.remove('on'),6000);}
+   window._at=setTimeout(()=>$('#alarm').classList.remove('on'),8000);}
+ else if(o.t==='alarmclear'){$('#alarm').classList.remove('on');clearTimeout(window._at);
+   add('k','interference cleared');}
  else if(o.t==='watch'){setWatchUI(o.mhz);}
  else if(o.t==='newsig'){renderSig({id:o.id,te:o.te,nmin:o.edges,nmax:o.edges,count:1,rssi:o.rssi,isNew:true});
    toast('NEW signal · te '+o.te+'µs');}
  else if(o.t==='sig'){renderSig({id:o.id,te:o.te,count:o.count,rssi:o.rssi});}
  else if(o.t==='sigupd'){const i=document.getElementById('lbl'+o.id);if(i)i.value=o.label;
    const r=document.getElementById('sig'+o.id);if(r)r.querySelector('.signew').style.display='none';}
- else if(o.t==='sigdel'){const r=document.getElementById('sig'+o.id);if(r)r.remove();delete SIG[o.id];}
+ else if(o.t==='sigdel'){const r=document.getElementById('sig'+o.id);if(r)r.remove();delete SIG[o.id];updSigBadge();}
+ else if(o.t==='node'){renderNode(o);}
+ else if(o.t==='nodedrop'){dropNode(o.id);}
  else if(o.t==='selftest'){let st=document.getElementById('st'+o.mod)||(()=>{
     let d=document.createElement('div');d.id='st'+o.mod;$('#selftest').appendChild(d);return d;})();
     let ok=o.version>0&&o.version<255;
@@ -348,9 +608,22 @@ function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
      `<span style="color:${ok?'var(--ok)':'var(--hot)'}">${ok?'SPI ok':'SPI DEAD'}</span> &middot; `+
      `marc ${o.marcstate} <span style="color:${o.in_rx?'var(--ok)':'var(--hot)'}">${o.in_rx?'RX':'NOT RX'}</span>`+
      ` &middot; raw ${o.rssi_raw}`;}
- else if(o.t==='boot'){setWatchUI(o.watch_mhz);}}
+ else if(o.t==='boot'){setWatchUI(o.watch_mhz);
+   setIdent({ip:o.ap_ip,fw:o.fw,sd:o.sd,ssid:o.ssid});}}
 
-fetch('/state.json').then(r=>r.json()).then(s=>{setWatchUI(s.watch_mhz);
+// ---- device identity + getting-started hint ----
+function setIdent(s){
+ if(s.ssid){$('#idssid').textContent=s.ssid;}
+ if(s.ip){$('#idip').textContent=s.ip;}
+ if(s.fw){$('#idfw').textContent=s.fw;
+   const v=(''+s.fw).match(/[0-9]+\.[0-9]+/);$('#verpill').textContent='v'+(v?v[0]:'?');}
+ if(s.sd!==undefined){$('#idsd').textContent=s.sd?'yes':'none';}}
+function dismissHint(){try{localStorage.setItem('sc_hint','1')}catch(_){}
+ $('#hint').style.display='none';}
+try{if(!localStorage.getItem('sc_hint'))$('#hint').style.display='block';}
+catch(_){$('#hint').style.display='block';}
+
+fetch('/state.json').then(r=>r.json()).then(s=>{setWatchUI(s.watch_mhz);setIdent(s);
  $('#sw').textContent=s.sweeps;window._fl={};
  s.channels.forEach(c=>{window._fl[c.mhz]=c.floor;row(c.mhz,c.busy,c.floor,c.rssi);});});
 const es=new EventSource('/events');
@@ -361,7 +634,11 @@ es.onmessage=ev=>handle(ev.data);
 )HTML";
 
 inline void webSetup() {
+#if USE_DF
+  WiFi.mode(WIFI_AP_STA);            // STA iface present for reliable ESP-NOW rx
+#else
   WiFi.mode(WIFI_AP);
+#endif
   WiFi.softAP(AP_SSID, AP_PASS, AP_CHANNEL);
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
@@ -370,6 +647,14 @@ inline void webSetup() {
   server.on("/state.json", HTTP_GET, [](AsyncWebServerRequest *r){
     r->send(200, "application/json", buildStateJson());
   });
+  server.on("/manifest.webmanifest", HTTP_GET, [](AsyncWebServerRequest *r){
+    r->send(200, "application/manifest+json",
+      "{\"name\":\"Scarecrow \xC2\xB7 Anubis Darkwatch\",\"short_name\":\"Scarecrow\","
+      "\"start_url\":\"/\",\"display\":\"standalone\",\"orientation\":\"portrait\","
+      "\"background_color\":\"#06070b\",\"theme_color\":\"#06070b\",\"icons\":[{"
+      "\"src\":\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%2306070b'/%3E%3Cpath d='M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z' fill='%23e0b84c'/%3E%3Ccircle cx='15' cy='28' r='1.7' fill='%2306070b'/%3E%3C/svg%3E\","
+      "\"sizes\":\"any\",\"type\":\"image/svg+xml\",\"purpose\":\"any\"}]}");
+  });
   server.on("/fox", HTTP_GET, [](AsyncWebServerRequest *r){
     if (r->hasParam("mhz")) setWatchFreq(r->getParam("mhz")->value().toFloat());
     r->send(200, "application/json",
@@ -377,6 +662,23 @@ inline void webSetup() {
   });
   server.on("/sigs.json", HTTP_GET, [](AsyncWebServerRequest *r){
     r->send(200, "application/json", buildSigsJson());
+  });
+  server.on("/sig.json", HTTP_GET, [](AsyncWebServerRequest *r){
+    int id = r->hasParam("id") ? r->getParam("id")->value().toInt() : -1;
+    r->send(200, "application/json", buildSigDetailJson(id));
+  });
+  server.on("/log.json", HTTP_GET, [](AsyncWebServerRequest *r){
+    r->send(200, "application/json", logStatusJson());
+  });
+  server.on("/log.csv", HTTP_GET, [](AsyncWebServerRequest *r){
+    if (!LittleFS.exists("/log.csv")) { r->send(200, "text/csv", "sec,event,id,te_us,rssi_dbm,mhz\n"); return; }
+    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/log.csv", "text/csv", true);
+    resp->addHeader("Content-Disposition", "attachment; filename=scarecrow-log.csv");
+    r->send(resp);
+  });
+  server.on("/log/clear", HTTP_GET, [](AsyncWebServerRequest *r){
+    logClear();
+    r->send(200, "application/json", "{\"ok\":true}");
   });
   server.on("/label", HTTP_GET, [](AsyncWebServerRequest *r){
     if (r->hasParam("id") && r->hasParam("name"))
@@ -387,6 +689,20 @@ inline void webSetup() {
     if (r->hasParam("id")) sigForget(r->getParam("id")->value().toInt());
     r->send(200, "application/json", "{\"ok\":true}");
   });
+  server.on("/forgetall", HTTP_GET, [](AsyncWebServerRequest *r){
+    sigsClear();
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+#if USE_DF
+  server.on("/nodes.json", HTTP_GET, [](AsyncWebServerRequest *r){
+    r->send(200, "application/json", buildNodesJson());
+  });
+  server.on("/cal", HTTP_GET, [](AsyncWebServerRequest *r){
+    if (r->hasParam("id") && r->hasParam("off"))
+      setNodeCal(r->getParam("id")->value()[0], r->getParam("off")->value().toInt());
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+#endif
   events.onConnect([](AsyncEventSourceClient *c){
     c->send("{\"t\":\"hello\"}", NULL, millis(), 2000);
   });

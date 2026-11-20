@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Scarecrow Terminal
+Comment=RX-only sub-GHz collector console (Anubis Darkwatch)
+Exec=scarecrow-term
+Terminal=true
+Categories=Utility;HamRadio;

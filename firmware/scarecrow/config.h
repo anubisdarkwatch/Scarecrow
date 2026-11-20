@@ -62,10 +62,20 @@ static const int   SCAN_PLAN_LEN = sizeof(SCAN_PLAN) / sizeof(SCAN_PLAN[0]);
 // Per-channel noise floor is tracked as an EWMA. An instantaneous reading
 // this many dB over the floor = "busy". Many adjacent channels busy at once,
 // sustained, with no clean burst edges = broadband jam signature.
-#define BUSY_MARGIN_DB      14
-#define FLOOR_EWMA_SHIFT     5     // floor += (sample-floor)>>SHIFT  (bigger=slower)
+#define BUSY_MARGIN_DB      14     // enter "busy" this many dB over the noise floor
+#define BUSY_HYST_DB         4     // ...and stay busy until it drops this much below that (anti-flicker)
+// Asymmetric noise-floor tracking: fall fast toward a new quiet level, rise slowly
+// so a lingering sub-threshold signal can't inflate the floor and blind the channel.
+#define FLOOR_DN_SHIFT       3     // quieter-than-floor read: floor += (s-floor)>>SHIFT  (small=faster down)
+#define FLOOR_UP_SHIFT       7     // louder-but-not-busy read: creep up slowly (big=slower up)
 #define JAM_MIN_CHANNELS     4     // this many channels hot simultaneously
 #define JAM_MIN_SWEEPS       3     // for this many consecutive sweeps -> alarm
+#define JAM_MIN_PEAK_DBM   (-85)   // ...and the hottest channel must clear this (ignore quiet false-hot)
+#define JAM_REFIRE_MS     5000     // while sustained, re-announce at most this often (anti-spam)
+// Occupancy is a rolling score, not a lifetime total: it decays toward zero so the
+// MONITOR view reflects *recent* activity. A busy hit adds OCC_HIT; it halves every HALFLIFE.
+#define OCC_HIT             16     // score added per busy sweep on a channel
+#define OCC_HALFLIFE_MS   30000    // occupancy score halves this often
 
 // ---- Module B: raw burst listener ----
 #define WATCH_FREQ_MHZ   433.92f   // park here; change to your area's hot freq
@@ -88,5 +98,13 @@ static const int   SCAN_PLAN_LEN = sizeof(SCAN_PLAN) / sizeof(SCAN_PLAN[0]);
 #define USE_WEB        1              // set 0 to drop WiFi entirely
 #define AP_SSID        "Scarecrow"
 #define AP_PASS        "watchonly"    // >=8 chars; change it
+#define FW_VERSION     "scarecrow-0.10-df"   // shown in web UI footer + boot banner
 #define AP_CHANNEL     6
 #define UI_MAX_LOG     200            // rows kept in the browser log
+
+// ---- Direction finding (ESP-NOW rover nodes) ----
+// Receive RSSI/burst reports from Scarecrow DF rover nodes and rank them in the
+// LOCATE view (hottest node = nearest the source). Rovers must use the same
+// WiFi channel as AP_CHANNEL above. Still receive-only — ESP-NOW is WiFi.
+#define USE_DF         1              // 0 to drop DF collector entirely
+#define NODE_TIMEOUT_MS 12000          // a rover silent this long is dropped (NODE row vanishes)
