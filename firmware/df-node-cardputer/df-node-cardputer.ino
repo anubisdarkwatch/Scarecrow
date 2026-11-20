@@ -19,7 +19,12 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <M5Unified.h>
+#include <Preferences.h>
 #include "df_packet.h"
+
+#define BTN_G0 0                 // G0 button: cycles screen rotation, saved to flash
+static Preferences prefs;
+static uint8_t hudRot = 1;       // 240x135 landscape by default
 
 // ---- identity & link -------------------------------------------------------
 #define NODE_ID            'C'       // UNIQUE per node ('A'=T-Embed, 'C'=Cardputer)
@@ -187,9 +192,12 @@ void onCfgRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
 void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
+  pinMode(BTN_G0, INPUT_PULLUP);
+  prefs.begin("node", false);
+  hudRot = prefs.getUChar("rot", 1);
   haveDisplay = (M5.Display.width() > 0);
   if (haveDisplay) {
-    M5.Display.setRotation(1);                   // 240x135 landscape
+    M5.Display.setRotation(hudRot);
     M5.Display.setBrightness(150);
     cv.createSprite(M5.Display.width(), M5.Display.height());
     drawScreen();
@@ -237,8 +245,23 @@ void reapBurst() {
   dfSend(DF_KIND_BURST, lastRssi, lastTe, n);
 }
 
+void cycleRotation() {
+  if (!haveDisplay) return;
+  hudRot = (hudRot + 1) & 3;
+  prefs.putUChar("rot", hudRot);
+  M5.Display.setRotation(hudRot);
+  cv.deleteSprite();
+  cv.createSprite(M5.Display.width(), M5.Display.height());
+  drawScreen();
+}
+
 void loop() {
   M5.update();
+  // G0 button: cycle + save screen rotation (debounced edge)
+  static bool bPrev = false;
+  bool bNow = (digitalRead(BTN_G0) == LOW);
+  if (bNow && !bPrev) cycleRotation();
+  bPrev = bNow;
   reapBurst();
   if (millis() - lastBeacon >= RSSI_BEACON_MS) {
     lastBeacon = millis();
