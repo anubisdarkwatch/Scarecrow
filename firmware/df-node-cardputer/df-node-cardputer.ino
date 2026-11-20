@@ -199,6 +199,7 @@ void setup() {
   if (haveDisplay) {
     M5.Display.setRotation(hudRot);
     M5.Display.setBrightness(150);
+    splash();
     cv.createSprite(M5.Display.width(), M5.Display.height());
     drawScreen();
   }
@@ -243,6 +244,29 @@ void reapBurst() {
   lastRssi = radioRssi();
   burstCount++;
   dfSend(DF_KIND_BURST, lastRssi, lastTe, n);
+}
+
+// Darkwatch boot splash: radiating RF rings + crow mark + title, ~1.3s.
+void splash() {
+  if (!haveDisplay) return;
+  auto &d = M5.Display;
+  int W = d.width(), H = d.height();
+  d.fillScreen(C_BG);
+  int cx = W / 2, cy = H / 2 - 10;
+  for (int rd = 5; rd < (H > W ? W : H); rd += 6) {       // radiating rings
+    d.drawCircle(cx, cy, rd, rd < H / 3 ? C_GOLD : C_ACC);
+    delay(20);
+  }
+  d.fillCircle(cx - 10, cy, 8, C_ACC);                    // crow mark
+  d.fillTriangle(cx - 2, cy - 5, cx + 13, cy - 1, cx - 2, cy + 5, C_GOLD);
+  d.fillCircle(cx - 12, cy - 2, 1, C_BG);
+  d.setTextDatum(middle_center);
+  d.setTextColor(C_INK, C_BG); d.setTextSize(2);
+  d.drawString("SCARECROW", cx, cy + 32);
+  d.setTextSize(1); d.setTextColor(C_GOLD, C_BG);
+  char s[26]; snprintf(s, sizeof(s), "ANUBIS DARKWATCH  NODE %c", NODE_ID);
+  d.drawString(s, cx, cy + 50);
+  delay(550);
 }
 
 void cycleRotation() {
