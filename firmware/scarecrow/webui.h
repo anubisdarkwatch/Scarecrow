@@ -164,6 +164,31 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
 .ndname{flex:1;letter-spacing:.08em}.ndrssi{color:var(--dim);font-size:12px}
 .sigrow.hot{border-color:var(--gold);box-shadow:0 0 16px rgba(224,184,76,.22)}
 .sigrow.hot .ndname{color:var(--gold)}
+/* ---- branding polish ---- */
+.dot.on{animation:beat 1.8s ease-in-out infinite}
+@keyframes beat{0%,100%{box-shadow:0 0 6px var(--ok)}50%{box-shadow:0 0 14px var(--ok),0 0 22px rgba(53,214,164,.4)}}
+.brand h1{background:linear-gradient(90deg,var(--ink),#c7ccda);-webkit-background-clip:text;background-clip:text}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;
+ font-size:10px;letter-spacing:.14em;border:1px solid var(--line)}
+.pill.rx{color:var(--ok);border-color:rgba(53,214,164,.4);background:rgba(53,214,164,.06)}
+.pill.rx::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.pill.ver{color:var(--gold);border-color:rgba(224,184,76,.3)}
+.tab{position:relative}
+.tab.sel::after{content:"";position:absolute;left:28%;right:28%;bottom:3px;height:2px;border-radius:2px;
+ background:var(--gold);box-shadow:0 0 8px var(--gold)}
+.card{position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;
+ background:linear-gradient(90deg,transparent,rgba(155,140,255,.5),transparent)}
+/* getting-started hint */
+.hint{background:linear-gradient(180deg,#121326,#0b0c17);border:1px solid rgba(155,140,255,.28);
+ border-radius:14px;padding:15px 16px;margin:14px 0;position:relative}
+.hint h3{margin:0 0 8px;font-size:12px;letter-spacing:.14em;color:var(--acc);text-transform:uppercase}
+.hint p{margin:5px 0;font-size:12.5px;color:#aeb4c7;line-height:1.55}
+.hint b{color:var(--ink)} .hint code{color:var(--gold);background:#05060a;padding:1px 6px;border-radius:5px}
+.hint .x{position:absolute;top:10px;right:12px}
+.idfoot{display:flex;gap:7px;flex-wrap:wrap;justify-content:center;margin-top:10px;
+ color:var(--dim);font-size:10.5px;letter-spacing:.06em}
+.idfoot span{white-space:nowrap} .idfoot b{color:var(--ink)}
 </style></head><body>
 <div class="scan"></div>
 <div class="app">
@@ -171,20 +196,24 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
   <svg class="mark" viewBox="0 0 48 48" fill="none">
    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
      <stop offset="0" stop-color="#b9adff"/><stop offset="1" stop-color="#6f5bff"/></linearGradient></defs>
-   <!-- RF arcs -->
+   <!-- RF arcs (listening) -->
    <path d="M33 14a13 13 0 0 1 0 20" stroke="url(#g)" stroke-width="2" opacity=".55" stroke-linecap="round"/>
    <path d="M37 10a19 19 0 0 1 0 28" stroke="url(#g)" stroke-width="2" opacity=".28" stroke-linecap="round"/>
+   <!-- scarecrow hat brim + crown -->
+   <path d="M6 18h18l-2 2.5H8z" fill="url(#g)" opacity=".9"/>
+   <path d="M11 18c0-4 2-7 4-7s4 3 4 7z" fill="url(#g)"/>
    <!-- crow head -->
-   <path d="M7 31c0-7 5-13 12-14l12-4c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z"
+   <path d="M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z"
      fill="url(#g)"/>
-   <circle cx="15" cy="27" r="1.7" fill="#06070b"/>
+   <circle cx="15" cy="28" r="1.7" fill="#06070b"/>
   </svg>
   <div class="brand"><h1>SCARECROW</h1><div class="sub">ANUBIS&nbsp;DARKWATCH</div></div>
   <div class="spacer"></div>
   <div class="live"><span id="dot" class="dot"></span><span id="livetxt">link</span></div>
  </header>
  <div class="statline">
-  <span class="tx">RX-ONLY</span>
+  <span class="pill rx">RX-ONLY</span>
+  <span class="pill ver" id="verpill">v--</span>
   <span>fox <b id="watch">--</b></span>
   <span><span id="sw">0</span> sweeps</span>
  </div>
@@ -199,6 +228,17 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
  <!-- MONITOR -->
  <div class="view sel" id="mon">
   <p id="alarm">⚠ BROADBAND INTERFERENCE</p>
+  <div class="hint" id="hint" style="display:none">
+   <span class="x" onclick="dismissHint()"><span class="dangbtn" style="margin:0;padding:3px 9px">dismiss</span></span>
+   <h3>Welcome to Scarecrow</h3>
+   <p>A <b>receive-only</b> sub-GHz sensor. It listens on your area's hot frequency and maps
+      what it hears &mdash; no transmit path anywhere in this firmware.</p>
+   <p><b>Fox hunt</b> a transmitter: open the <b>FOX&nbsp;HUNT</b> tab, set the frequency, and walk
+      toward the rising signal. <b>SIGNATURES</b> fingerprints the emitters it sees.</p>
+   <p><b>Add a node</b> for true direction finding: flash a rover (T&#8209;Embed&nbsp;CC1101) and power
+      it near the collector &mdash; it joins over ESP&#8209;NOW and the <b>LOCATE</b> tab ranks nodes live.
+      With no node, LOCATE still works as a single&#8209;point fox meter.</p>
+  </div>
   <div class="card"><h2>Radio self-test</h2><div id="selftest"></div></div>
   <div class="card"><h2>Channel occupancy</h2>
    <table id="occ"><thead><tr><th>MHz</th><th>RSSI</th><th>busy</th><th>floor</th><th>live</th></tr></thead>
@@ -280,6 +320,12 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
   </div>
  </div>
  <p class="foot"><span class="tx">No transmit path in this firmware.</span> Display &amp; tune only.</p>
+ <div class="idfoot">
+  <span>AP <b id="idssid">Scarecrow</b></span><span>·</span>
+  <span><b id="idip">—</b></span><span>·</span>
+  <span id="idfw">scarecrow</span><span>·</span>
+  <span>SD <b id="idsd">—</b></span>
+ </div>
 </div>
 <div id="toast" class="toast"></div>
 <script>
@@ -333,14 +379,26 @@ function resetPeak(){peak=-200;$('#peakv').textContent='—';
 
 // ---- signature library ----
 const SIG={};
-function sigMeta(d){return `te <b>${d.te}µs</b> &middot; edges ${d.nmin}`
- +(d.nmax&&d.nmax!=d.nmin?'–'+d.nmax:'')+` &middot; seen <b>${d.count}×</b> &middot; <b>${d.rssi}</b>dBm`;}
+// client-side mirror of the firmware's te windows, so SSE-added sigs show a hint
+// immediately; the server's band-aware guess wins whenever it's present.
+function guessName(te,srv){if(srv)return srv;te=+te;
+ if(te>=120&&te<220)return 'PT2262/PT2240-class';
+ if(te>=220&&te<300)return 'PT2262-class remote';
+ if(te>=300&&te<430)return 'EV1527-class remote';
+ if(te>=430&&te<620)return 'Holtek/CAME-class';
+ if(te>=620&&te<980)return 'weather-station-class';
+ if(te>=980&&te<1600)return 'slow-OOK sensor';return '';}
+function sigMeta(d){const g=guessName(d.te,d.guess);
+ return `te <b>${d.te}µs</b> &middot; edges ${d.nmin}`
+ +(d.nmax&&d.nmax!=d.nmin?'–'+d.nmax:'')+` &middot; seen <b>${d.count}×</b> &middot; <b>${d.rssi}</b>dBm`
+ +(g?` &middot; <span class="new">~ ${g}</span>`:'');}
 function renderSig(d){
  const s=SIG[d.id]=Object.assign({nmin:d.nmin,nmax:d.nmax,count:0,label:''},SIG[d.id]||{},d);
  $('#sigempty').style.display='none';
  let row=document.getElementById('sig'+d.id);
  if(!row){row=document.createElement('div');row.className='sigrow';row.id='sig'+d.id;
-  row.innerHTML=`<div class="sigmain"><input class="siglabel" id="lbl${d.id}" placeholder="unlabeled #${d.id}">
+  const ph=guessName(d.te,d.guess)||('unlabeled #'+d.id);
+  row.innerHTML=`<div class="sigmain"><input class="siglabel" id="lbl${d.id}" placeholder="${ph}">
    <span class="signew" style="display:none">NEW</span></div>
    <div class="sigmeta" onclick="sigDetail(${d.id})"></div>
    <div class="sigacts"><button class="btn ghost" onclick="sigDetail(${d.id})">DETAIL</button>
@@ -356,7 +414,11 @@ function human(s){s=+s;if(s<90)return s+'s ago';if(s<5400)return Math.round(s/60
 function sigDetail(id){fetch('/sig.json?id='+id).then(r=>r.json()).then(d=>{
  if(!d.ok)return;const nm=(SIG[id]&&SIG[id].label)||('unlabeled #'+id);
  $('#smname').textContent=nm;
- $('#smband').innerHTML='Band <b>'+d.freq.toFixed(2)+' MHz</b> &middot; te <b>'+d.te+'µs</b>';
+ const gs=guessName(d.te,d.guess);
+ $('#smband').innerHTML='Band <b>'+d.freq.toFixed(2)+' MHz</b> &middot; te <b>'+d.te+'µs</b>'
+  +(gs?'<br><span style="color:var(--gold)">Looks like: '+gs+'</span> '
+      +'<span class="dangbtn" style="color:var(--acc);border-color:var(--acc);padding:2px 8px;margin:0" '
+      +'onclick="applyLabel('+id+',\''+gs.replace(/'/g,"")+'\')">use this name</span>':'');
  // sparkline
  const h=d.hist||[],sv=$('#smspark');
  if(h.length>1){const mn=Math.min(...h),mx=Math.max(...h),rng=(mx-mn)||1;
@@ -384,6 +446,9 @@ function logStat(){fetch('/log.json').then(r=>r.json()).then(d=>{const e=$('#log
 logStat();setInterval(logStat,10000);
 function labelSig(id){const v=document.getElementById('lbl'+id).value;
  fetch('/label?id='+id+'&name='+encodeURIComponent(v)).then(()=>toast('saved'));}
+function applyLabel(id,name){const i=document.getElementById('lbl'+id);if(i)i.value=name;
+ if(SIG[id])SIG[id].label=name;
+ fetch('/label?id='+id+'&name='+encodeURIComponent(name)).then(()=>{toast('named: '+name);closeSig();});}
 function forgetSig(id){fetch('/forget?id='+id).then(()=>{
  const r=document.getElementById('sig'+id);if(r)r.remove();delete SIG[id];});}
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');
@@ -487,9 +552,22 @@ function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
      `<span style="color:${ok?'var(--ok)':'var(--hot)'}">${ok?'SPI ok':'SPI DEAD'}</span> &middot; `+
      `marc ${o.marcstate} <span style="color:${o.in_rx?'var(--ok)':'var(--hot)'}">${o.in_rx?'RX':'NOT RX'}</span>`+
      ` &middot; raw ${o.rssi_raw}`;}
- else if(o.t==='boot'){setWatchUI(o.watch_mhz);}}
+ else if(o.t==='boot'){setWatchUI(o.watch_mhz);
+   setIdent({ip:o.ap_ip,fw:o.fw,sd:o.sd,ssid:o.ssid});}}
 
-fetch('/state.json').then(r=>r.json()).then(s=>{setWatchUI(s.watch_mhz);
+// ---- device identity + getting-started hint ----
+function setIdent(s){
+ if(s.ssid){$('#idssid').textContent=s.ssid;}
+ if(s.ip){$('#idip').textContent=s.ip;}
+ if(s.fw){$('#idfw').textContent=s.fw;
+   const v=(''+s.fw).match(/[0-9]+\.[0-9]+/);$('#verpill').textContent='v'+(v?v[0]:'?');}
+ if(s.sd!==undefined){$('#idsd').textContent=s.sd?'yes':'none';}}
+function dismissHint(){try{localStorage.setItem('sc_hint','1')}catch(_){}
+ $('#hint').style.display='none';}
+try{if(!localStorage.getItem('sc_hint'))$('#hint').style.display='block';}
+catch(_){$('#hint').style.display='block';}
+
+fetch('/state.json').then(r=>r.json()).then(s=>{setWatchUI(s.watch_mhz);setIdent(s);
  $('#sw').textContent=s.sweeps;window._fl={};
  s.channels.forEach(c=>{window._fl[c.mhz]=c.floor;row(c.mhz,c.busy,c.floor,c.rssi);});});
 const es=new EventSource('/events');

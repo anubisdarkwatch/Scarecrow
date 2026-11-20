@@ -91,6 +91,15 @@ void emit(const String& line, bool ui = false) {
 // Snapshot for the dashboard's initial load / reconnect.
 String buildStateJson() {
   String s = String("{\"watch_mhz\":") + String(watchFreq, 2)
+           + ",\"fw\":\"" FW_VERSION "\""
+           + ",\"ssid\":\"" AP_SSID "\""
+           + ",\"ip\":\"" + webApIp() + "\""
+           + ",\"sd\":" +
+#if USE_SD
+             String(sdOk ? "true" : "false")
+#else
+             "false"
+#endif
            + ",\"sweeps\":" + sweeps + ",\"channels\":[";
   for (int i = 0; i < SCAN_PLAN_LEN; i++) {
     if (i) s += ",";
@@ -252,6 +261,29 @@ void sigsClear() {                              // forget the whole signature li
   for (int i = 0; i < SIG_MAX; i++) sigs[i] = Sig{};
   sigsDirty = true;
 }
+// ---------------------------------------------------------------------------
+//  Passive protocol-family hinting. We only have the base symbol time (te),
+//  the edge-count range, and the band — we do NOT demodulate bits. So this is
+//  a coarse "looks like" classifier for naming help, never a decode. Windows
+//  are deliberately broad and labeled as classes, not identifications.
+// ---------------------------------------------------------------------------
+struct ProtoHint { uint16_t teLo, teHi; const char *name; };
+static const ProtoHint PROTO_TBL[] = {
+  { 120,  220, "PT2262/PT2240-class" },
+  { 220,  300, "PT2262-class remote" },
+  { 300,  430, "EV1527-class remote" },     // most garage/gate/alarm fobs
+  { 430,  620, "Holtek/CAME-class" },
+  { 620,  980, "weather-station-class" },
+  { 980, 1600, "slow-OOK sensor" },
+};
+String sigGuessName(uint16_t te, uint16_t nmin, uint16_t nmax, float mhz) {
+  // band-specific shortcuts first
+  if (mhz > 314.0f && mhz < 316.0f && te < 180) return "TPMS/car-sensor (315)";
+  if (mhz > 867.0f && mhz < 869.5f && te < 260) return "EU-ISM device (868)";
+  for (unsigned i = 0; i < sizeof(PROTO_TBL)/sizeof(PROTO_TBL[0]); i++)
+    if (te >= PROTO_TBL[i].teLo && te < PROTO_TBL[i].teHi) return String(PROTO_TBL[i].name);
+  return "";
+}
 String buildSigsJson() {
   String s = "{\"sigs\":[";
   bool first = true;
@@ -261,6 +293,7 @@ String buildSigsJson() {
        + ",\"nmin\":" + sigs[i].nmin + ",\"nmax\":" + sigs[i].nmax
        + ",\"count\":" + sigs[i].count + ",\"rssi\":" + sigs[i].lastRssi
        + ",\"age\":" + ((millis() - sigs[i].lastMs) / 1000)
+       + ",\"guess\":\"" + sigGuessName(sigs[i].te, sigs[i].nmin, sigs[i].nmax, sigs[i].freq_x100/100.0f) + "\""
        + ",\"label\":\"" + String(sigs[i].label) + "\"}";
   }
   s += "]}"; return s;
@@ -275,6 +308,7 @@ String buildSigDetailJson(int id) {
            + ",\"freq\":" + String(g.freq_x100 / 100.0f, 2)
            + ",\"firstage\":" + ((millis() - g.firstMs) / 1000)
            + ",\"lastage\":" + ((millis() - g.lastMs) / 1000)
+           + ",\"guess\":\"" + sigGuessName(g.te, g.nmin, g.nmax, g.freq_x100/100.0f) + "\""
            + ",\"label\":\"" + String(g.label) + "\",\"hist\":[";
   for (uint8_t k = 0; k < g.histLen; k++) {         // unroll ring oldest -> newest
     uint8_t idx = (g.histHead + SIG_MAX * SIG_HIST - g.histLen + k) % SIG_HIST;
@@ -489,8 +523,9 @@ void setup() {
   moduleSelfTest(MOD_B, "B");
   ELECHOUSE_cc1101.setModul(MOD_A);   // leave scanner selected
 
-  emit(String("{\"t\":\"boot\",\"fw\":\"scarecrow-0.9-df\",\"tx\":false,")
-     + "\"channels\":" + SCAN_PLAN_LEN
+  emit(String("{\"t\":\"boot\",\"fw\":\"" FW_VERSION "\",\"tx\":false,")
+     + "\"ssid\":\"" AP_SSID "\""
+     + ",\"channels\":" + SCAN_PLAN_LEN
      + ",\"watch_mhz\":" + String(watchFreq, 2)
      + ",\"ap_ip\":\"" + webApIp() + "\""
      + ",\"sd\":" +

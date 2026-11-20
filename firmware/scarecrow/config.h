@@ -88,6 +88,7 @@ static const int   SCAN_PLAN_LEN = sizeof(SCAN_PLAN) / sizeof(SCAN_PLAN[0]);
 #define USE_WEB        1              // set 0 to drop WiFi entirely
 #define AP_SSID        "Scarecrow"
 #define AP_PASS        "watchonly"    // >=8 chars; change it
+#define FW_VERSION     "scarecrow-0.10-df"   // shown in web UI footer + boot banner
 #define AP_CHANNEL     6
 #define UI_MAX_LOG     200            // rows kept in the browser log
 
