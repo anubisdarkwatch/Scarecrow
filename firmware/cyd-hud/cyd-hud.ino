@@ -25,12 +25,16 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <math.h>
 #ifdef BOARD_CYD32
 #include <Wire.h>
 #endif
 
 static TFT_eSPI tft = TFT_eSPI();
+static Preferences prefs;
+static uint8_t hudRot = 1;                 // screen rotation; BOOT button cycles + saves it
+#define BOOT_BTN 0
 
 static const char* AP_SSID = "Scarecrow";
 static const char* AP_PASS = "watchonly";
@@ -303,6 +307,15 @@ void viewAction() {                             // long-press action, per view
   }
 }
 
+// BOOT button steps the screen through its 4 rotations and remembers the choice,
+// so any CYD panel (which mount differently) can be set upright in the field.
+void cycleRotation() {
+  hudRot = (hudRot + 1) & 3;
+  prefs.putUChar("rot", hudRot);
+  tft.setRotation(hudRot);
+  SW = tft.width(); SH = tft.height();
+  tft.fillScreen(C_BG); drawHeader(); redraw(); drawFooter();
+}
 // Short Darkwatch intro at power-on: radiating RF rings, the crow mark, title,
 // and a heat sweep. Pure eye-candy, ~1.5s, runs once before the HUD comes up.
 void splash() {
@@ -336,7 +349,10 @@ void setup() {
   pinMode(27, OUTPUT); digitalWrite(27, HIGH);   // 2.4" backlight
   pinMode(TOUCH_IRQ, INPUT);                     // resistive PENIRQ
 #endif
-  tft.init(); tft.setRotation(1);
+  pinMode(BOOT_BTN, INPUT);                       // BOOT button cycles screen rotation
+  prefs.begin("hud", false);
+  hudRot = prefs.getUChar("rot", 1);              // remembered orientation (default 1 = landscape)
+  tft.init(); tft.setRotation(hudRot);
   SW = tft.width(); SH = tft.height();
   splash();
   tft.fillScreen(C_BG);
@@ -349,6 +365,12 @@ void loop() {
 
   // touch: quick tap = cycle view, hold (>700ms) = view action
   static bool tp = false; static uint32_t t0 = 0; static bool acted = false;
+  // BOOT button: cycle + save screen rotation (debounced edge)
+  static bool bPrev = false;
+  bool bNow = (digitalRead(BOOT_BTN) == LOW);
+  if (bNow && !bPrev) cycleRotation();
+  bPrev = bNow;
+
   bool touched = touchDown();
   if (touched && !tp) { t0 = millis(); acted = false; }
   if (touched && !acted && millis() - t0 > 700) { acted = true; viewAction(); }
