@@ -1,0 +1,8 @@
+{
+  "name": "Scarecrow Node - T-Embed CC1101",
+  "version": "0.10",
+  "new_install_prompt_erase": true,
+  "builds": [
+    { "chipFamily": "ESP32-S3", "parts": [ { "path": "../firmware/node-tembed.bin", "offset": 0 } ] }
+  ]
+}

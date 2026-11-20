@@ -1,0 +1,8 @@
+{
+  "name": "Scarecrow HUD - CYD 3.2"",
+  "version": "0.10",
+  "new_install_prompt_erase": true,
+  "builds": [
+    { "chipFamily": "ESP32", "parts": [ { "path": "../firmware/cyd-32.bin", "offset": 0 } ] }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Scarecrow Collector (Evil Crow RF V2)",
+  "version": "0.10",
+  "new_install_prompt_erase": true,
+  "builds": [
+    { "chipFamily": "ESP32", "parts": [ { "path": "../firmware/collector.bin", "offset": 0 } ] }
+  ]
+}

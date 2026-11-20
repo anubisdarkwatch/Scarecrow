@@ -1,0 +1,8 @@
+{
+  "name": "Scarecrow Node - Cardputer ADV",
+  "version": "0.10",
+  "new_install_prompt_erase": true,
+  "builds": [
+    { "chipFamily": "ESP32-S3", "parts": [ { "path": "../firmware/node-cardputer-adv.bin", "offset": 0 } ] }
+  ]
+}
