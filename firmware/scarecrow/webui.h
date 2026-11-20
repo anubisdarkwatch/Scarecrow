@@ -16,8 +16,10 @@ extern float  getWatchFreq();
 extern String buildSigsJson();      // signature library
 extern void   sigLabel(int, String);
 extern void   sigForget(int);
+extern void   sigsClear();          // forget the whole signature library
 #if USE_DF
 extern String buildNodesJson();     // direction-finding node table
+extern void   setNodeCal(char, int); // per-node RSSI calibration offset (dBm)
 #endif
 
 static AsyncWebServer  server(80);
@@ -120,6 +122,12 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
 .foot .tx{color:var(--ok)}
 /* signatures */
 .siglist{display:flex;flex-direction:column;gap:9px;margin-top:4px}
+.ndcal{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--dim)}
+.ndcal button{background:var(--line);color:var(--ink);border:0;border-radius:4px;width:28px;height:23px;
+ font-size:15px;line-height:1;cursor:pointer}
+.calofflbl{min-width:62px;letter-spacing:.03em}
+.dangbtn{background:transparent;color:var(--hot);border:1px solid var(--hot);border-radius:7px;
+ padding:7px 12px;font-size:12px;letter-spacing:.06em;cursor:pointer;margin-bottom:10px}
 .sigrow{background:#090b12;border:1px solid var(--line);border-radius:12px;padding:12px}
 .sigmain{display:flex;align-items:center;gap:8px}
 .siglabel{flex:1;background:#05060a;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:9px;font:inherit}
@@ -223,6 +231,7 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
      Emitters grouped by base symbol timing (<b>te</b>). <b class="new">NEW</b> =
      first seen this session. Label the ones you recognise; unlabeled strangers
      that keep returning are worth a look. Saved to SD when present.</p>
+   <button class="dangbtn" onclick="forgetAll()">Forget all signatures</button>
    <div id="siglist" class="siglist"></div>
    <p class="foot" id="sigempty">No signatures yet — capture a burst on the fox frequency.</p>
   </div>
@@ -327,11 +336,21 @@ function renderNode(d){NODES[d.id]=Object.assign(NODES[d.id]||{},d,{seen:Date.no
  let row=document.getElementById('nd'+d.id);
  if(!row){row=document.createElement('div');row.className='sigrow';row.id='nd'+d.id;
   row.innerHTML=`<div class="sigmain"><b class="ndname"></b><span class="ndrssi"></span></div>
-   <div class="foxbar" style="margin-top:9px"><i></i></div>`;$('#nodelist').appendChild(row);}
+   <div class="foxbar" style="margin-top:9px"><i></i></div><div class="ndcal"></div>`;$('#nodelist').appendChild(row);}
  row.querySelector('.ndname').textContent=d.id==='0'?'EVIL CROW · anchor':('NODE '+d.id);
  row.querySelector('.ndrssi').textContent=s.rssi+' dBm'+(s.age>5?' · stale '+s.age+'s':'');
  row.querySelector('.foxbar>i').style.width=Math.max(0,Math.min(100,(s.rssi+110)/80*100))+'%';
+ const cal=row.querySelector('.ndcal');                         // rover calibration offset
+ if(d.id!=='0'){const off=s.off||0;cal.style.display='flex';
+  cal.innerHTML=`<span class="calofflbl">cal ${off>0?'+':''}${off} dB</span>`+
+   `<button onclick="calNode('${d.id}',${off-1})">−</button><button onclick="calNode('${d.id}',${off+1})">+</button>`;
+ }else cal.style.display='none';
  rankNodes();updateLocateMode();}
+function calNode(id,off){if(off<-40)off=-40;if(off>40)off=40;
+ fetch('/cal?id='+id+'&off='+off).then(()=>{if(NODES[id])NODES[id].off=off;});}
+function forgetAll(){if(!confirm('Forget every captured signature?'))return;
+ fetch('/forgetall').then(()=>{$('#siglist').innerHTML='';for(const k in SIG)delete SIG[k];
+  const e=$('#sigempty');if(e)e.style.display='';});}
 function rankNodes(){const L=$('#nodelist');
  [...L.children].sort((a,b)=>NODES[b.id.slice(2)].rssi-NODES[a.id.slice(2)].rssi)
   .forEach((r,i,arr)=>{r.style.order=i;r.classList.toggle('hot',i===0&&arr.length>1);});}
@@ -442,9 +461,18 @@ inline void webSetup() {
     if (r->hasParam("id")) sigForget(r->getParam("id")->value().toInt());
     r->send(200, "application/json", "{\"ok\":true}");
   });
+  server.on("/forgetall", HTTP_GET, [](AsyncWebServerRequest *r){
+    sigsClear();
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
 #if USE_DF
   server.on("/nodes.json", HTTP_GET, [](AsyncWebServerRequest *r){
     r->send(200, "application/json", buildNodesJson());
+  });
+  server.on("/cal", HTTP_GET, [](AsyncWebServerRequest *r){
+    if (r->hasParam("id") && r->hasParam("off"))
+      setNodeCal(r->getParam("id")->value()[0], r->getParam("off")->value().toInt());
+    r->send(200, "application/json", "{\"ok\":true}");
   });
 #endif
   events.onConnect([](AsyncEventSourceClient *c){

@@ -238,6 +238,10 @@ void sigsLoad() {
 #endif
 }
 
+void sigsClear() {                              // forget the whole signature library
+  for (int i = 0; i < SIG_MAX; i++) sigs[i] = Sig{};
+  sigsDirty = true;
+}
 String buildSigsJson() {
   String s = "{\"sigs\":[";
   bool first = true;
@@ -272,7 +276,7 @@ void sigForget(int id) {
 //  reported from its own Module-B watch RSSI.
 // ===========================================================================
 #if USE_DF
-struct DfNode { bool used; char id; int16_t rssi; uint16_t te; uint32_t lastMs; uint32_t seq; bool dirty; };
+struct DfNode { bool used; char id; int16_t rssi; uint16_t te; uint32_t lastMs; uint32_t seq; bool dirty; int8_t offset; };
 DfNode dfNodes[8];
 uint32_t lastDfTick = 0;
 portMUX_TYPE dfMux = portMUX_INITIALIZER_UNLOCKED;
@@ -293,11 +297,21 @@ void onDfRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   portEXIT_CRITICAL(&dfMux);
 }
 
+// Per-node RSSI calibration offset (dBm) from the web UI, so an amplified rover
+// and a plain one compare fairly in the ranking.
+void setNodeCal(char id, int off) {
+  if (off < -40) off = -40; if (off > 40) off = 40;
+  portENTER_CRITICAL(&dfMux);
+  for (int i = 0; i < 8; i++) if (dfNodes[i].used && dfNodes[i].id == id) { dfNodes[i].offset = (int8_t)off; dfNodes[i].dirty = true; }
+  portEXIT_CRITICAL(&dfMux);
+}
+
 String buildNodesJson() {
   String s = String("{\"target\":") + String(watchFreq, 2)
            + ",\"nodes\":[{\"id\":\"0\",\"self\":true,\"rssi\":" + lastFoxRssi + ",\"age\":0}";
   for (int i = 0; i < 8; i++) if (dfNodes[i].used)
-    s += ",{\"id\":\"" + String(dfNodes[i].id) + "\",\"rssi\":" + dfNodes[i].rssi
+    s += ",{\"id\":\"" + String(dfNodes[i].id) + "\",\"rssi\":" + (dfNodes[i].rssi + dfNodes[i].offset)
+       + ",\"off\":" + dfNodes[i].offset
        + ",\"te\":" + dfNodes[i].te + ",\"age\":" + ((millis() - dfNodes[i].lastMs) / 1000) + "}";
   s += "]}"; return s;
 }
@@ -316,15 +330,15 @@ void dfTick() {
   lastDfTick = millis();
   webPush(String("{\"t\":\"node\",\"id\":\"0\",\"self\":true,\"rssi\":") + lastFoxRssi + ",\"age\":0}");
   for (int i = 0; i < 8; i++) {
-    bool d = false; int16_t rssi = 0; uint16_t te = 0; uint32_t age = 0; char id = 0;
+    bool d = false; int16_t rssi = 0; uint16_t te = 0; uint32_t age = 0; char id = 0; int8_t off = 0;
     portENTER_CRITICAL(&dfMux);
     if (dfNodes[i].used && dfNodes[i].dirty) {
-      d = true; id = dfNodes[i].id; rssi = dfNodes[i].rssi; te = dfNodes[i].te;
+      d = true; id = dfNodes[i].id; rssi = dfNodes[i].rssi; te = dfNodes[i].te; off = dfNodes[i].offset;
       age = (millis() - dfNodes[i].lastMs) / 1000; dfNodes[i].dirty = false;
     }
     portEXIT_CRITICAL(&dfMux);
-    if (d) webPush(String("{\"t\":\"node\",\"id\":\"") + id + "\",\"rssi\":" + rssi
-                 + ",\"te\":" + te + ",\"age\":" + age + "}");
+    if (d) webPush(String("{\"t\":\"node\",\"id\":\"") + id + "\",\"rssi\":" + (rssi + off)
+                 + ",\"off\":" + off + ",\"te\":" + te + ",\"age\":" + age + "}");
   }
 }
 #endif
