@@ -19,6 +19,7 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <M5Unified.h>
+#include <M5Cardputer.h>     // TCA8418 keyboard (Cardputer-Adv), wraps M5Unified
 #include <Preferences.h>
 #include "df_packet.h"
 
@@ -75,6 +76,25 @@ int      lastSendRC = -1;
 bool     espnowOk = false;
 bool     haveDisplay = false;
 
+// ---- views + local signature store -----------------------------------------
+enum View { V_RSSI = 0, V_SIGS, V_DIAG, V_COUNT };
+uint8_t  view = V_RSSI;
+
+#define NSIG 12
+struct NSig { bool used; uint16_t te; uint32_t count; int16_t rssi; uint32_t lastMs; };
+NSig nsigs[NSIG] = {};
+void sigAdd(uint16_t te, int16_t rssi) {
+  int slot = -1, freeSlot = -1;
+  for (int i = 0; i < NSIG; i++) {
+    if (!nsigs[i].used) { if (freeSlot < 0) freeSlot = i; continue; }
+    if (abs((int)nsigs[i].te - (int)te) <= 90) { slot = i; break; }
+  }
+  if (slot < 0) slot = (freeSlot >= 0) ? freeSlot : 0;   // reuse oldest-ish if full
+  if (!nsigs[slot].used) { nsigs[slot].used = true; nsigs[slot].count = 0; }
+  nsigs[slot].te = te; nsigs[slot].rssi = rssi;
+  nsigs[slot].count++; nsigs[slot].lastMs = millis();
+}
+
 void onDfSent(const wifi_tx_info_t *info, esp_now_send_status_t st) {
   if (st == ESP_NOW_SEND_SUCCESS) txOk++; else txFail++;
 }
@@ -120,10 +140,14 @@ static void radioRetune(float mhz) {
 #define C_OK    0x3EB3
 M5Canvas cv(&M5.Display);
 
+static const char* viewName() {
+  return view == V_RSSI ? "SIGNAL" : view == V_SIGS ? "SIGS" : "DIAG";
+}
 void drawScreen() {
   if (!haveDisplay) return;
   int W = cv.width(), H = cv.height();
   cv.fillSprite(C_BG);
+  // header
   cv.setTextDatum(top_left); cv.setTextSize(1);
   cv.setTextColor(C_ACC, C_BG);  cv.drawString("SCARECROW", 6, 5);
   cv.setTextColor(C_GOLD, C_BG); cv.drawString("DARKWATCH", 6, 17);
@@ -131,30 +155,51 @@ void drawScreen() {
   cv.setTextColor(C_INK, C_BG);
   char nid[10]; snprintf(nid, sizeof(nid), "NODE %c", NODE_ID);
   cv.drawString(nid, W - 6, 5);
-  uint16_t vcol = (nodeVer == 0x14) ? C_OK : C_GOLD;
-  cv.setTextColor(vcol, C_BG);
+  cv.setTextColor((nodeVer == 0x14) ? C_OK : C_GOLD, C_BG);
   cv.drawString(nodeVer == 0x14 ? "cc:ok" : "cc:--", W - 6, 17);
-  // big RSSI
-  cv.setTextDatum(middle_center); cv.setTextSize(4);
-  cv.setTextColor(lastRssi > -70 ? C_OK : C_INK, C_BG);
-  char rs[8]; snprintf(rs, sizeof(rs), "%d", lastRssi);
-  cv.drawString(rs, W / 2, H / 2 - 2);
-  cv.setTextSize(1); cv.setTextColor(C_DIM, C_BG);
-  cv.drawString("dBm", W / 2, H / 2 + 22);
-  // signal bar
-  int bw = W - 12, bx = 6, by = H - 34;
-  float p = (lastRssi + 110) / 80.0f; if (p < 0) p = 0; if (p > 1) p = 1;
-  cv.drawRoundRect(bx, by, bw, 9, 3, C_DIM);
-  cv.fillRoundRect(bx, by, (int)(bw * p), 9, 3, C_GOLD);
-  // footer
+  cv.drawFastHLine(0, 30, W, C_DIM);
+
+  if (view == V_RSSI) {
+    cv.setTextDatum(middle_center); cv.setTextSize(4);
+    cv.setTextColor(lastRssi > -70 ? C_OK : C_INK, C_BG);
+    char rs[8]; snprintf(rs, sizeof(rs), "%d", lastRssi);
+    cv.drawString(rs, W / 2, H / 2 - 2);
+    cv.setTextSize(1); cv.setTextColor(C_DIM, C_BG);
+    cv.drawString("dBm", W / 2, H / 2 + 22);
+    int bw = W - 12, bx = 6, by = H - 34;
+    float p = (lastRssi + 110) / 80.0f; if (p < 0) p = 0; if (p > 1) p = 1;
+    cv.drawRoundRect(bx, by, bw, 9, 3, C_DIM);
+    cv.fillRoundRect(bx, by, (int)(bw * p), 9, 3, C_GOLD);
+  } else if (view == V_SIGS) {
+    cv.setTextDatum(top_left); cv.setTextSize(1);
+    int y = 36, shown = 0;
+    for (int i = 0; i < NSIG && y < H - 12; i++) {
+      if (!nsigs[i].used) continue;
+      cv.setTextColor(nsigs[i].rssi > -70 ? C_OK : C_INK, C_BG);
+      char l[40]; snprintf(l, sizeof(l), "te%u  x%lu  %ddBm",
+        nsigs[i].te, (unsigned long)nsigs[i].count, nsigs[i].rssi);
+      cv.drawString(l, 6, y); y += 13; shown++;
+    }
+    if (!shown) { cv.setTextColor(C_DIM, C_BG); cv.drawString("no bursts captured yet", 6, 40); }
+  } else { // V_DIAG
+    cv.setTextDatum(top_left); cv.setTextSize(1); cv.setTextColor(C_INK, C_BG);
+    char l[40]; int y = 36;
+    snprintf(l, sizeof(l), "band   %.2f MHz", watchMhz);      cv.drawString(l, 6, y); y += 13;
+    snprintf(l, sizeof(l), "cc1101 ver 0x%02X", nodeVer);     cv.drawString(l, 6, y); y += 13;
+    snprintf(l, sizeof(l), "esp-now %s  ch%d", espnowOk?"up":"--", COLLECTOR_CHANNEL); cv.drawString(l, 6, y); y += 13;
+    snprintf(l, sizeof(l), "tx %lu  fail %lu", (unsigned long)txOk, (unsigned long)txFail); cv.drawString(l, 6, y); y += 13;
+    snprintf(l, sizeof(l), "batt %d%%  bursts %lu", M5.Power.getBatteryLevel(), (unsigned long)burstCount); cv.drawString(l, 6, y);
+  }
+  // footer: view name + hint
   cv.setTextDatum(bottom_left); cv.setTextColor(C_OK, C_BG);
   cv.drawString("RX-ONLY", 6, H - 4);
+  cv.setTextDatum(bottom_center); cv.setTextColor(C_GOLD, C_BG);
+  cv.drawString(viewName(), W / 2, H - 4);
   cv.setTextDatum(bottom_right); cv.setTextColor(C_DIM, C_BG);
-  char ft[26]; snprintf(ft, sizeof(ft), "%.2f  tx%lu  %d%%",
-    watchMhz, (unsigned long)txOk, M5.Power.getBatteryLevel());
-  cv.drawString(ft, W - 6, H - 4);
+  cv.drawString(",/ or G0", W - 6, H - 4);
   cv.pushSprite(0, 0);
 }
+void cycleView() { view = (view + 1) % V_COUNT; drawScreen(); }
 
 // ---- burst capture (GDO0 edge interrupt) -----------------------------------
 volatile uint32_t edgeBuf[BURST_MAX_EDGES];
@@ -191,7 +236,7 @@ void onCfgRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
 
 void setup() {
   auto cfg = M5.config();
-  M5.begin(cfg);
+  M5Cardputer.begin(cfg, true);        // init board + TCA8418 keyboard
   pinMode(BTN_G0, INPUT_PULLUP);
   prefs.begin("node", false);
   hudRot = prefs.getUChar("rot", 1);
@@ -243,6 +288,7 @@ void reapBurst() {
   lastTe = computeTe(snap, n);
   lastRssi = radioRssi();
   burstCount++;
+  sigAdd(lastTe, lastRssi);
   dfSend(DF_KIND_BURST, lastRssi, lastTe, n);
 }
 
@@ -280,11 +326,21 @@ void cycleRotation() {
 }
 
 void loop() {
-  M5.update();
-  // G0 button: cycle + save screen rotation (debounced edge)
-  static bool bPrev = false;
+  M5Cardputer.update();
+  // Keyboard: ',' = left (prev screen), '/' = right (next screen) — the Cardputer
+  // arrow-key cluster. (';'/'.'' are up/down, reserved for future scrolling.)
+  if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+    for (auto c : M5Cardputer.Keyboard.keysState().word) {
+      if (c == '/')      { view = (view + 1) % V_COUNT; drawScreen(); }
+      else if (c == ',') { view = (view + V_COUNT - 1) % V_COUNT; drawScreen(); }
+    }
+  }
+  // G0 button: short tap = next screen, hold (>900ms) = rotate + save
+  static bool bPrev = false; static uint32_t bT0 = 0; static bool bLong = false;
   bool bNow = (digitalRead(BTN_G0) == LOW);
-  if (bNow && !bPrev) cycleRotation();
+  if (bNow && !bPrev) { bT0 = millis(); bLong = false; }
+  if (bNow && !bLong && millis() - bT0 > 900) { bLong = true; cycleRotation(); }
+  if (!bNow && bPrev && !bLong) cycleView();
   bPrev = bNow;
   reapBurst();
   if (millis() - lastBeacon >= RSSI_BEACON_MS) {
