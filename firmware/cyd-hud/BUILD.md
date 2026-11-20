@@ -42,3 +42,11 @@ Build example:
 arduino-cli compile --fqbn "esp32:esp32:esp32:PartitionScheme=default,FlashSize=4M" \
   --build-property "compiler.cpp.extra_flags=<flags above>" cyd-hud.ino
 ```
+
+## Verified panels
+- 2.8" with LCD module silkscreen **HSD028309** (ILI9341): works with the
+  CYD28 flags above at default rotation 1 (320x240), fills edge-to-edge.
+- Some boards marked "ESP32-32E / 240x320 Resistance Touch" use a different
+  panel controller and show an offset ghost strip under the ILI9341 driver —
+  use a known-good ILI9341 unit, or capture that board's controller and add a
+  variant.
