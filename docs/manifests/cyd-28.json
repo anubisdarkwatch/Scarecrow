@@ -1,0 +1,8 @@
+{
+  "name": "Scarecrow HUD - CYD 2.8 / 2.4 inch",
+  "version": "0.10",
+  "new_install_prompt_erase": true,
+  "builds": [
+    { "chipFamily": "ESP32", "parts": [ { "path": "../firmware/cyd-28.bin", "offset": 0 } ] }
+  ]
+}

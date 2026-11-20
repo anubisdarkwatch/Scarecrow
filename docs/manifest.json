@@ -1,16 +1,8 @@
 {
   "name": "Scarecrow (Evil Crow RF V2, receive-only)",
-  "version": "0.8.0",
+  "version": "0.10",
   "new_install_prompt_erase": true,
   "builds": [
-    {
-      "chipFamily": "ESP32",
-      "parts": [
-        {
-          "path": "scarecrow.merged.bin",
-          "offset": 0
-        }
-      ]
-    }
+    { "chipFamily": "ESP32", "parts": [ { "path": "firmware/collector.bin", "offset": 0 } ] }
   ]
 }
