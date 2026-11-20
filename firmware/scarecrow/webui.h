@@ -9,14 +9,18 @@
 #if USE_WEB
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
+#include <LittleFS.h>
 
 extern String buildStateJson();     // provided by the main sketch
 extern void   setWatchFreq(float);  // retune Module B (fox target)
 extern float  getWatchFreq();
 extern String buildSigsJson();      // signature library
+extern String buildSigDetailJson(int); // one signature: timeline + RSSI history
 extern void   sigLabel(int, String);
 extern void   sigForget(int);
 extern void   sigsClear();          // forget the whole signature library
+extern String logStatusJson();      // flash event-log status (bytes/cap/full)
+extern void   logClear();           // wipe the flash event log
 #if USE_DF
 extern String buildNodesJson();     // direction-finding node table
 extern void   setNodeCal(char, int); // per-node RSSI calibration offset (dBm)
@@ -132,9 +136,26 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
 .sigmain{display:flex;align-items:center;gap:8px}
 .siglabel{flex:1;background:#05060a;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:9px;font:inherit}
 .signew{color:#06070b;background:var(--gold);border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;letter-spacing:.12em}
-.sigmeta{color:var(--dim);font-size:12px;margin:9px 2px 10px}.sigmeta b{color:var(--ink)}
+.sigmeta{color:var(--dim);font-size:12px;margin:9px 2px 10px;cursor:pointer}.sigmeta b{color:var(--ink)}
 .sigacts{display:flex;gap:8px}.sigacts .btn{flex:1;padding:8px}
 .new{color:var(--gold)}
+.sigtools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+.sigtools .btn{padding:8px 12px;margin:0}.sigtools .dangbtn{margin:0 0 0 auto}
+/* signature detail modal */
+.modal{position:fixed;inset:0;background:rgba(3,4,7,.72);backdrop-filter:blur(3px);
+ display:none;align-items:flex-end;justify-content:center;z-index:20}
+.modal.open{display:flex}
+.sheet{background:var(--panel);border:1px solid var(--line);border-radius:16px 16px 0 0;
+ width:100%;max-width:560px;padding:18px 18px 26px;box-shadow:0 -8px 40px rgba(0,0,0,.6)}
+.sheethdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.sheethdr b{color:var(--ink);font-size:16px}
+.x{color:var(--dim);cursor:pointer;font-size:18px;padding:2px 8px}
+.smband{color:var(--dim);font-size:12px;margin-bottom:12px}.smband b{color:var(--gold)}
+.spark{width:100%;height:80px;background:#05060a;border:1px solid var(--line);border-radius:10px}
+.smstats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
+.smstats div{background:#090b12;border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.smstats span{display:block;color:var(--dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+.smstats b{color:var(--ink);font-size:15px}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
  background:var(--gold);color:#06070b;font-weight:700;padding:11px 18px;border-radius:11px;
  opacity:0;transition:.25s;z-index:9;pointer-events:none;letter-spacing:.04em;box-shadow:var(--glow)}
@@ -231,9 +252,24 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
      Emitters grouped by base symbol timing (<b>te</b>). <b class="new">NEW</b> =
      first seen this session. Label the ones you recognise; unlabeled strangers
      that keep returning are worth a look. Saved to SD when present.</p>
-   <button class="dangbtn" onclick="forgetAll()">Forget all signatures</button>
+   <div class="sigtools">
+    <button class="btn" onclick="dlLog()">⤓ Download log</button>
+    <button class="btn ghost" onclick="clrLog()">Clear log</button>
+    <button class="dangbtn" onclick="forgetAll()">Forget all signatures</button>
+   </div>
+   <p class="foot" id="logstat" style="text-align:left;margin:2px 0 10px"></p>
+   <p class="foot" style="text-align:left;margin:-4px 0 10px">Tap a signature to see its history.</p>
    <div id="siglist" class="siglist"></div>
    <p class="foot" id="sigempty">No signatures yet — capture a burst on the fox frequency.</p>
+  </div>
+ </div>
+ <!-- signature detail modal -->
+ <div id="sigmodal" class="modal" onclick="if(event.target===this)closeSig()">
+  <div class="sheet">
+   <div class="sheethdr"><b id="smname"></b><span class="x" onclick="closeSig()">✕</span></div>
+   <div id="smband" class="smband"></div>
+   <svg id="smspark" viewBox="0 0 300 80" class="spark" preserveAspectRatio="none"></svg>
+   <div id="smstats" class="smstats"></div>
   </div>
  </div>
  <!-- LOCATE -->
@@ -306,13 +342,46 @@ function renderSig(d){
  if(!row){row=document.createElement('div');row.className='sigrow';row.id='sig'+d.id;
   row.innerHTML=`<div class="sigmain"><input class="siglabel" id="lbl${d.id}" placeholder="unlabeled #${d.id}">
    <span class="signew" style="display:none">NEW</span></div>
-   <div class="sigmeta"></div>
-   <div class="sigacts"><button class="btn ghost" onclick="labelSig(${d.id})">SAVE</button>
+   <div class="sigmeta" onclick="sigDetail(${d.id})"></div>
+   <div class="sigacts"><button class="btn ghost" onclick="sigDetail(${d.id})">DETAIL</button>
+   <button class="btn ghost" onclick="labelSig(${d.id})">SAVE</button>
    <button class="btn ghost" onclick="forgetSig(${d.id})">FORGET</button></div>`;
   $('#siglist').prepend(row);
   if(s.label)row.querySelector('.siglabel').value=s.label;}
  row.querySelector('.sigmeta').innerHTML=sigMeta(s);
  if(d.isNew)row.querySelector('.signew').style.display='inline';}
+// ---- signature detail (timeline + RSSI sparkline) ----
+function human(s){s=+s;if(s<90)return s+'s ago';if(s<5400)return Math.round(s/60)+'m ago';
+ if(s<172800)return Math.round(s/3600)+'h ago';return Math.round(s/86400)+'d ago';}
+function sigDetail(id){fetch('/sig.json?id='+id).then(r=>r.json()).then(d=>{
+ if(!d.ok)return;const nm=(SIG[id]&&SIG[id].label)||('unlabeled #'+id);
+ $('#smname').textContent=nm;
+ $('#smband').innerHTML='Band <b>'+d.freq.toFixed(2)+' MHz</b> &middot; te <b>'+d.te+'µs</b>';
+ // sparkline
+ const h=d.hist||[],sv=$('#smspark');
+ if(h.length>1){const mn=Math.min(...h),mx=Math.max(...h),rng=(mx-mn)||1;
+  const pts=h.map((v,i)=>{const x=i/(h.length-1)*300,y=74-((v-mn)/rng)*68;return x.toFixed(1)+','+y.toFixed(1);}).join(' ');
+  sv.innerHTML='<polyline points="'+pts+'" fill="none" stroke="var(--gold)" stroke-width="2"/>'
+   +'<text x="2" y="12" fill="var(--dim)" font-size="11">'+mx+'</text>'
+   +'<text x="2" y="78" fill="var(--dim)" font-size="11">'+mn+'</text>';}
+ else sv.innerHTML='<text x="150" y="44" fill="var(--dim)" font-size="12" text-anchor="middle">not enough samples yet</text>';
+ $('#smstats').innerHTML=
+  '<div><span>Last RSSI</span><b>'+d.rssi+' dBm</b></div>'
+  +'<div><span>Hits</span><b>'+d.count+'×</b></div>'
+  +'<div><span>Edge count</span><b>'+d.nmin+(d.nmax!=d.nmin?'–'+d.nmax:'')+'</b></div>'
+  +'<div><span>First seen</span><b>'+human(d.firstage)+'</b></div>'
+  +'<div><span>Last seen</span><b>'+human(d.lastage)+'</b></div>';
+ $('#sigmodal').classList.add('open');});}
+function closeSig(){$('#sigmodal').classList.remove('open');}
+// ---- event log ----
+function dlLog(){window.location='/log.csv';}
+function clrLog(){if(!confirm('Clear the on-device event log?'))return;
+ fetch('/log/clear').then(()=>{toast('log cleared');logStat();});}
+function logStat(){fetch('/log.json').then(r=>r.json()).then(d=>{const e=$('#logstat');if(!e)return;
+ if(!d.ok){e.textContent='Flash log unavailable.';return;}
+ const kb=(d.bytes/1024).toFixed(1),cap=(d.cap/1024).toFixed(0);
+ e.innerHTML='Event log: <b>'+kb+' KB</b> / '+cap+' KB'+(d.full?' <b class="new">FULL — download &amp; clear</b>':'');});}
+logStat();setInterval(logStat,10000);
 function labelSig(id){const v=document.getElementById('lbl'+id).value;
  fetch('/label?id='+id+'&name='+encodeURIComponent(v)).then(()=>toast('saved'));}
 function forgetSig(id){fetch('/forget?id='+id).then(()=>{
@@ -451,6 +520,23 @@ inline void webSetup() {
   });
   server.on("/sigs.json", HTTP_GET, [](AsyncWebServerRequest *r){
     r->send(200, "application/json", buildSigsJson());
+  });
+  server.on("/sig.json", HTTP_GET, [](AsyncWebServerRequest *r){
+    int id = r->hasParam("id") ? r->getParam("id")->value().toInt() : -1;
+    r->send(200, "application/json", buildSigDetailJson(id));
+  });
+  server.on("/log.json", HTTP_GET, [](AsyncWebServerRequest *r){
+    r->send(200, "application/json", logStatusJson());
+  });
+  server.on("/log.csv", HTTP_GET, [](AsyncWebServerRequest *r){
+    if (!LittleFS.exists("/log.csv")) { r->send(200, "text/csv", "sec,event,id,te_us,rssi_dbm,mhz\n"); return; }
+    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/log.csv", "text/csv", true);
+    resp->addHeader("Content-Disposition", "attachment; filename=scarecrow-log.csv");
+    r->send(resp);
+  });
+  server.on("/log/clear", HTTP_GET, [](AsyncWebServerRequest *r){
+    logClear();
+    r->send(200, "application/json", "{\"ok\":true}");
   });
   server.on("/label", HTTP_GET, [](AsyncWebServerRequest *r){
     if (r->hasParam("id") && r->hasParam("name"))

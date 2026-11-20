@@ -10,6 +10,7 @@
 #include <Arduino.h>
 #include "ELECHOUSE_CC1101_SRC_DRV.h"
 #include "config.h"
+#include <LittleFS.h>     // internal-flash event log (survives reboot, no SD needed)
 #if USE_SD
   #include <SPI.h>
   #include <SD.h>
@@ -158,6 +159,7 @@ void foxTick() {
 // ===========================================================================
 #define SIG_MAX        48
 #define SIG_TE_TOL_US  90     // two bursts are "same" if |te| within this
+#define SIG_HIST       24     // RSSI history samples kept per signature (sparkline)
 
 struct Sig {
   bool     used;
@@ -166,6 +168,9 @@ struct Sig {
   uint32_t count;
   int16_t  lastRssi;
   uint32_t firstMs, lastMs;
+  uint16_t freq_x100;          // band last heard on (MHz * 100)
+  int8_t   hist[SIG_HIST];     // ring of recent RSSI (dBm, clamped int8)
+  uint8_t  histHead, histLen;  // ring cursor + fill
   char     label[18];
 };
 Sig  sigs[SIG_MAX];
@@ -195,6 +200,11 @@ int sigIngest(uint16_t te, uint16_t n, int16_t rssi, bool *isNew) {
     *isNew = true;
   } else *isNew = false;
   sigs[id].count++; sigs[id].lastRssi = rssi; sigs[id].lastMs = millis();
+  sigs[id].freq_x100 = (uint16_t)(watchFreq * 100.0f + 0.5f);
+  int8_t rc = (int8_t)(rssi < -128 ? -128 : (rssi > 0 ? 0 : rssi));   // clamp to int8
+  sigs[id].hist[sigs[id].histHead] = rc;
+  sigs[id].histHead = (sigs[id].histHead + 1) % SIG_HIST;
+  if (sigs[id].histLen < SIG_HIST) sigs[id].histLen++;
   if (n < sigs[id].nmin) sigs[id].nmin = n;
   if (n > sigs[id].nmax) sigs[id].nmax = n;
   return id;
@@ -255,6 +265,24 @@ String buildSigsJson() {
   }
   s += "]}"; return s;
 }
+// Full detail for one signature: timing, band, timeline, RSSI history (oldest->newest).
+String buildSigDetailJson(int id) {
+  if (id < 0 || id >= SIG_MAX || !sigs[id].used) return "{\"ok\":false}";
+  Sig &g = sigs[id];
+  String s = "{\"ok\":true,\"id\":" + String(id)
+           + ",\"te\":" + g.te + ",\"nmin\":" + g.nmin + ",\"nmax\":" + g.nmax
+           + ",\"count\":" + g.count + ",\"rssi\":" + g.lastRssi
+           + ",\"freq\":" + String(g.freq_x100 / 100.0f, 2)
+           + ",\"firstage\":" + ((millis() - g.firstMs) / 1000)
+           + ",\"lastage\":" + ((millis() - g.lastMs) / 1000)
+           + ",\"label\":\"" + String(g.label) + "\",\"hist\":[";
+  for (uint8_t k = 0; k < g.histLen; k++) {         // unroll ring oldest -> newest
+    uint8_t idx = (g.histHead + SIG_MAX * SIG_HIST - g.histLen + k) % SIG_HIST;
+    if (k) s += ",";
+    s += String((int)g.hist[idx]);
+  }
+  s += "]}"; return s;
+}
 void sigLabel(int id, String name) {
   if (id < 0 || id >= SIG_MAX || !sigs[id].used) return;
   String clean; for (uint16_t i=0;i<name.length() && clean.length()<17;i++){
@@ -267,6 +295,58 @@ void sigForget(int id) {
   if (id < 0 || id >= SIG_MAX) return;
   sigs[id].used = false; sigsSave();
   webPush(String("{\"t\":\"sigdel\",\"id\":")+id+"}");
+}
+
+// ===========================================================================
+//  EVENT LOG — rolling CSV on internal flash (LittleFS). Survives reboot,
+//  needs no SD card. One row per signature detection; downloadable from the
+//  web UI as /log.csv. Buffered in RAM and flushed off the hot path.
+// ===========================================================================
+#define LOG_PATH   "/log.csv"
+#define LOG_CAP    262144UL     // ~256 KB hard cap; stops appending when reached
+#define LOG_HDR    "sec,event,id,te_us,rssi_dbm,mhz\n"
+bool     fsOk = false;
+bool     logFull = false;
+uint32_t logBytes = 0;
+String   logBuf;
+uint32_t lastLogFlush = 0;
+
+void logInit() {
+  fsOk = LittleFS.begin(true);          // format-on-fail: first boot provisions FS
+  if (!fsOk) return;
+  if (!LittleFS.exists(LOG_PATH)) {
+    File f = LittleFS.open(LOG_PATH, FILE_WRITE);
+    if (f) { f.print(LOG_HDR); f.close(); }
+  }
+  File f = LittleFS.open(LOG_PATH, FILE_READ);
+  if (f) { logBytes = f.size(); f.close(); }
+  logFull = (logBytes >= LOG_CAP);
+}
+void logEvent(const char *ev, int id, uint16_t te, int16_t rssi, float mhz) {
+  if (!fsOk || logFull) return;
+  logBuf += String(millis() / 1000) + "," + ev + "," + id + "," + te + ","
+          + rssi + "," + String(mhz, 2) + "\n";
+  if (logBuf.length() > 400) { logBuf.reserve(logBuf.length()); }  // nudge, avoid churn
+}
+void logFlush() {
+  if (!fsOk || !logBuf.length()) return;
+  if (logBytes + logBuf.length() > LOG_CAP) { logFull = true; logBuf = ""; return; }
+  File f = LittleFS.open(LOG_PATH, FILE_APPEND);
+  if (!f) { logBuf = ""; return; }
+  f.print(logBuf); logBytes += logBuf.length(); f.close();
+  logBuf = ""; lastLogFlush = millis();
+}
+void logClear() {
+  logBuf = "";
+  if (!fsOk) return;
+  File f = LittleFS.open(LOG_PATH, FILE_WRITE);
+  if (f) { f.print(LOG_HDR); f.close(); }
+  logBytes = strlen(LOG_HDR); logFull = false;
+}
+String logStatusJson() {
+  return String("{\"ok\":") + (fsOk ? "true" : "false")
+       + ",\"bytes\":" + logBytes + ",\"cap\":" + LOG_CAP
+       + ",\"full\":" + (logFull ? "true" : "false") + "}";
 }
 
 // ===========================================================================
@@ -387,6 +467,7 @@ void setup() {
   if (sdOk) logFile = SD.open("/scarecrow.ndjson", FILE_APPEND);
 #endif
   sigsLoad();                 // restore saved signature library (if SD present)
+  logInit();                  // mount LittleFS + open rolling event log
 
   initScanner();
   initListener();
@@ -522,6 +603,7 @@ void reapBurst() {
   int id = sigIngest(te, n, rssi, &isNew);
   if (id >= 0) {
     sigsDirty = true;
+    logEvent(isNew ? "new" : "hit", id, te, rssi, watchFreq);   // rolling flash log
     if (isNew)   // noteworthy -> serial/SD/UI
       emit(String("{\"t\":\"newsig\",\"id\":") + id + ",\"te\":" + te
          + ",\"edges\":" + n + ",\"rssi\":" + rssi + "}", true);
@@ -561,6 +643,7 @@ void loop() {
   foxTick();        // fast RSSI on the fox freq -> UI
   maybeReport();
   if (sigsDirty && millis() - lastSigSave > 3000) sigsSave();  // debounced persist
+  if (logBuf.length() && millis() - lastLogFlush > 4000) logFlush();  // debounced log flush
 #if USE_DF
   dfTick();         // rank rover nodes -> LOCATE view
 #endif
