@@ -27,6 +27,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <math.h>
+#include "esp_sleep.h"
 #ifdef BOARD_CYD32
 #include <Wire.h>
 #endif
@@ -316,6 +317,36 @@ void cycleRotation() {
   SW = tft.width(); SH = tft.height();
   tft.fillScreen(C_BG); drawHeader(); redraw(); drawFooter();
 }
+// Shown mid-hold so the user knows a long press is about to power the HUD off.
+void drawPowerHint() {
+  tft.fillRect(0, 48, SW, SH - 64, C_BG);
+  tft.setTextDatum(MC_DATUM); tft.setTextFont(4); tft.setTextColor(C_WARN, C_BG);
+  tft.drawString("KEEP HOLDING", SW / 2, SH / 2 - 14);
+  tft.setTextFont(2); tft.setTextColor(C_DIM, C_BG);
+  tft.drawString("to power off  (release = cancel)", SW / 2, SH / 2 + 12);
+}
+// Soft power-off: screen + radio off, then deep sleep. Wake with BOOT/RST or by
+// re-plugging. On the 3.2" battery the power chip also cuts output at this low
+// current, so the side battery button turns it back on. (Same as Beat Commander.)
+void powerOff() {
+  tft.fillScreen(C_BG);
+  tft.setTextDatum(MC_DATUM); tft.setTextFont(4); tft.setTextColor(C_GOLD, C_BG);
+  tft.drawString("POWERING OFF", SW / 2, SH / 2 - 12);
+  tft.setTextFont(2); tft.setTextColor(C_DIM, C_BG);
+  tft.drawString("BOOT / RST or re-plug to wake", SW / 2, SH / 2 + 14);
+  delay(1500);
+#ifdef BOARD_CYD32
+  pinMode(27, OUTPUT); digitalWrite(27, LOW);          // backlight off
+#else
+  pinMode(21, OUTPUT); digitalWrite(21, LOW);
+  pinMode(27, OUTPUT); digitalWrite(27, LOW);
+#endif
+  tft.writecommand(0x28);                               // display off
+  tft.writecommand(0x10);                               // panel sleep in
+  WiFi.disconnect(true); WiFi.mode(WIFI_OFF);
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)BOOT_BTN, 0);// BOOT press wakes it
+  esp_deep_sleep_start();                               // ~deep sleep; never returns
+}
 // Short Darkwatch intro at power-on: radiating RF rings, the crow mark, title,
 // and a heat sweep. Pure eye-candy, ~1.5s, runs once before the HUD comes up.
 void splash() {
@@ -363,8 +394,8 @@ void setup() {
 void loop() {
   ensureWifi();
 
-  // touch: quick tap = cycle view, hold (>700ms) = view action
-  static bool tp = false; static uint32_t t0 = 0; static bool acted = false;
+  // touch: quick tap = cycle view, hold = view action, 10s hold = power off
+  static bool tp = false; static uint32_t t0 = 0; static bool acted = false, powHint = false;
   // BOOT button: cycle + save screen rotation (debounced edge)
   static bool bPrev = false;
   bool bNow = (digitalRead(BOOT_BTN) == LOW);
@@ -372,9 +403,18 @@ void loop() {
   bPrev = bNow;
 
   bool touched = touchDown();
-  if (touched && !tp) { t0 = millis(); acted = false; }
-  if (touched && !acted && millis() - t0 > 700) { acted = true; viewAction(); }
-  if (!touched && tp) { uint32_t dur = millis() - t0; if (!acted && dur >= 40 && dur < 500) cycleView(); }
+  if (touched && !tp) { t0 = millis(); acted = false; powHint = false; }
+  if (touched && !acted) {
+    uint32_t held = millis() - t0;
+    if (held >= 10000) { acted = true; powerOff(); }              // 10s -> off (never returns)
+    else if (held >= 3000 && !powHint) { powHint = true; drawPowerHint(); }
+  }
+  if (!touched && tp) {                                           // on release
+    uint32_t dur = millis() - t0;
+    if (dur >= 40 && dur < 600)           cycleView();            // quick tap
+    else if (dur >= 600 && dur < 10000)   viewAction();           // hold
+    if (powHint) { drawHeader(); redraw(); }                      // clear the power hint
+  }
   tp = touched;
 
   bool wantNodes = (view == V_LOCATE || view == V_CONTROL);
