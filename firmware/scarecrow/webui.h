@@ -32,7 +32,9 @@ static AsyncEventSource events("/events");
 static const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Scarecrow · Anubis Darkwatch</title><style>
+<title>Scarecrow · Anubis Darkwatch</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath d='M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z' fill='%23e0b84c'/%3E%3Ccircle cx='15' cy='28' r='1.7' fill='%2306070b'/%3E%3C/svg%3E">
+<style>
 :root{
  --bg:#06070b; --bg2:#0b0d15; --panel:#0e1018; --panel2:#121521;
  --ink:#e9ecf4; --dim:#6b7186; --line:#1d2130;
@@ -165,6 +167,14 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
 .sigrow.hot{border-color:var(--gold);box-shadow:0 0 16px rgba(224,184,76,.22)}
 .sigrow.hot .ndname{color:var(--gold)}
 /* ---- branding polish ---- */
+.rfarc{animation:radiate 2.6s ease-in-out infinite}
+.rfarc.a2{animation-delay:.7s}
+@keyframes radiate{0%,100%{opacity:.12}45%{opacity:.6}}
+.tbadge{display:inline-block;min-width:15px;margin-left:7px;padding:0 5px;border-radius:999px;
+ font-size:9.5px;line-height:15px;background:var(--line);color:var(--dim);vertical-align:middle;
+ letter-spacing:.04em;transition:.2s}
+.tab.sel .tbadge{background:rgba(224,184,76,.16);color:var(--gold)}
+.tbadge.live{background:rgba(53,214,164,.16);color:var(--ok)}
 .dot.on{animation:beat 1.8s ease-in-out infinite}
 @keyframes beat{0%,100%{box-shadow:0 0 6px var(--ok)}50%{box-shadow:0 0 14px var(--ok),0 0 22px rgba(53,214,164,.4)}}
 .brand h1{background:linear-gradient(90deg,var(--ink),#c7ccda);-webkit-background-clip:text;background-clip:text}
@@ -197,8 +207,8 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
      <stop offset="0" stop-color="#b9adff"/><stop offset="1" stop-color="#6f5bff"/></linearGradient></defs>
    <!-- RF arcs (listening) -->
-   <path d="M33 14a13 13 0 0 1 0 20" stroke="url(#g)" stroke-width="2" opacity=".55" stroke-linecap="round"/>
-   <path d="M37 10a19 19 0 0 1 0 28" stroke="url(#g)" stroke-width="2" opacity=".28" stroke-linecap="round"/>
+   <path class="rfarc" d="M33 14a13 13 0 0 1 0 20" stroke="url(#g)" stroke-width="2" opacity=".55" stroke-linecap="round"/>
+   <path class="rfarc a2" d="M37 10a19 19 0 0 1 0 28" stroke="url(#g)" stroke-width="2" opacity=".28" stroke-linecap="round"/>
    <!-- scarecrow hat brim + crown -->
    <path d="M6 18h18l-2 2.5H8z" fill="url(#g)" opacity=".9"/>
    <path d="M11 18c0-4 2-7 4-7s4 3 4 7z" fill="url(#g)"/>
@@ -221,8 +231,8 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
  <div class="tabs">
   <div class="tab sel" data-v="mon">MONITOR</div>
   <div class="tab" data-v="fox">FOX HUNT</div>
-  <div class="tab" data-v="sig">SIGNATURES</div>
-  <div class="tab" data-v="loc">LOCATE</div>
+  <div class="tab" data-v="sig">SIGNATURES<span class="tbadge" id="bsig">0</span></div>
+  <div class="tab" data-v="loc">LOCATE<span class="tbadge" id="bloc">solo</span></div>
  </div>
 
  <!-- MONITOR -->
@@ -337,12 +347,15 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
  t.classList.add('sel');$('#'+t.dataset.v).classList.add('sel');});
 
 // ---- monitor: occupancy ----
+// heat colour shared by occupancy bars (teal cold -> gold -> crimson hot)
+function heatCss(p){return p>=.72?'var(--hot)':p>=.45?'var(--gold)':'var(--ok)';}
 function row(mhz,busy,floor,rssi){let tr=document.getElementById('c'+mhz);
  if(!tr){tr=document.createElement('tr');tr.id='c'+mhz;
   tr.innerHTML=`<td>${mhz}</td><td class="r">--</td><td class="b">0</td><td class="f">--</td>
   <td style="width:30%"><div class="bar"><i></i></div></td>`;occBody.appendChild(tr);}
  if(rssi!=null){tr.querySelector('.r').textContent=rssi;
-  tr.querySelector('.bar>i').style.width=Math.max(0,Math.min(100,(rssi+110)/80*100))+'%';}
+  const p=Math.max(0,Math.min(1,(rssi+110)/80)),bi=tr.querySelector('.bar>i');
+  bi.style.width=(p*100)+'%';bi.style.background=heatCss(p);}
  tr.querySelector('.b').textContent=busy;tr.querySelector('.f').textContent=floor;}
 function add(cls,txt){const d=document.createElement('div');d.className=cls;
  d.textContent=new Date().toLocaleTimeString()+'  '+txt;$('#log').prepend(d);
@@ -407,7 +420,8 @@ function renderSig(d){
   $('#siglist').prepend(row);
   if(s.label)row.querySelector('.siglabel').value=s.label;}
  row.querySelector('.sigmeta').innerHTML=sigMeta(s);
- if(d.isNew)row.querySelector('.signew').style.display='inline';}
+ if(d.isNew)row.querySelector('.signew').style.display='inline';updSigBadge();}
+function updSigBadge(){const b=$('#bsig');if(b)b.textContent=Object.keys(SIG).length;}
 // ---- signature detail (timeline + RSSI sparkline) ----
 function human(s){s=+s;if(s<90)return s+'s ago';if(s<5400)return Math.round(s/60)+'m ago';
  if(s<172800)return Math.round(s/3600)+'h ago';return Math.round(s/86400)+'d ago';}
@@ -450,7 +464,7 @@ function applyLabel(id,name){const i=document.getElementById('lbl'+id);if(i)i.va
  if(SIG[id])SIG[id].label=name;
  fetch('/label?id='+id+'&name='+encodeURIComponent(name)).then(()=>{toast('named: '+name);closeSig();});}
 function forgetSig(id){fetch('/forget?id='+id).then(()=>{
- const r=document.getElementById('sig'+id);if(r)r.remove();delete SIG[id];});}
+ const r=document.getElementById('sig'+id);if(r)r.remove();delete SIG[id];updSigBadge();});}
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');
  clearTimeout(window._tt);window._tt=setTimeout(()=>t.classList.remove('show'),2200);}
 fetch('/sigs.json').then(r=>r.json()).then(d=>d.sigs.forEach(renderSig)).catch(()=>{});
@@ -459,7 +473,9 @@ fetch('/sigs.json').then(r=>r.json()).then(d=>d.sigs.forEach(renderSig)).catch((
 const NODES={};let curTarget='--';
 // A rover counts as active if we've heard from it in the last 12s.
 function activeRovers(){return Object.values(NODES).filter(n=>n.id!=='0'&&(Date.now()-(n.seen||0))<12000).length;}
-function updateLocateMode(){const m=$('#locmsg');if(!m)return;const r=activeRovers();
+function updateLocateMode(){const m=$('#locmsg');const r=activeRovers();
+ const b=$('#bloc');if(b){b.textContent=r>0?r:'solo';b.classList.toggle('live',r>0);}
+ if(!m)return;
  if(r===0){m.innerHTML='<b>Standalone.</b> This Evil Crow (anchor) is your single-point '
    +'fox meter on <b>'+curTarget+'</b> — the bar below rises as you near the source. '
    +'Add one or more rover nodes over ESP-NOW for multi-point direction finding.';}
@@ -484,15 +500,20 @@ function calNode(id,off){if(off<-40)off=-40;if(off>40)off=40;
  fetch('/cal?id='+id+'&off='+off).then(()=>{if(NODES[id])NODES[id].off=off;});}
 function forgetAll(){if(!confirm('Forget every captured signature?'))return;
  fetch('/forgetall').then(()=>{$('#siglist').innerHTML='';for(const k in SIG)delete SIG[k];
-  const e=$('#sigempty');if(e)e.style.display='';});}
+  const e=$('#sigempty');if(e)e.style.display='';updSigBadge();});}
 function rankNodes(){const L=$('#nodelist');
  [...L.children].sort((a,b)=>NODES[b.id.slice(2)].rssi-NODES[a.id.slice(2)].rssi)
   .forEach((r,i,arr)=>{r.style.order=i;r.classList.toggle('hot',i===0&&arr.length>1);});}
-// Drop rovers we stop hearing from (anchor 0 always stays); keep the mode honest.
+// Remove one rover (anchor 0 never drops) — fired by the collector's nodedrop
+// event the instant a rover goes silent, so NODE rows vanish, not just grey out.
+function dropNode(id){if(id==='0')return;const row=document.getElementById('nd'+id);
+ if(row)row.remove();delete NODES[id];rankNodes();updateLocateMode();}
+// Backstop sweep: also drop rovers we haven't heard from (in case a drop event is
+// missed), on a tighter window than the collector's reap so the UI never lags it.
 function sweepNodes(){const now=Date.now();
  for(const id in NODES){if(id==='0')continue;const age=(now-NODES[id].seen)/1000;
   const row=document.getElementById('nd'+id);
-  if(age>30){if(row)row.remove();delete NODES[id];continue;}
+  if(age>14){if(row)row.remove();delete NODES[id];continue;}
   if(row)row.querySelector('.ndrssi').textContent=NODES[id].rssi+' dBm'+(age>6?' · stale '+Math.round(age)+'s':'');}
  rankNodes();updateLocateMode();}
 setInterval(sweepNodes,3000);
@@ -543,8 +564,9 @@ function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
  else if(o.t==='sig'){renderSig({id:o.id,te:o.te,count:o.count,rssi:o.rssi});}
  else if(o.t==='sigupd'){const i=document.getElementById('lbl'+o.id);if(i)i.value=o.label;
    const r=document.getElementById('sig'+o.id);if(r)r.querySelector('.signew').style.display='none';}
- else if(o.t==='sigdel'){const r=document.getElementById('sig'+o.id);if(r)r.remove();delete SIG[o.id];}
+ else if(o.t==='sigdel'){const r=document.getElementById('sig'+o.id);if(r)r.remove();delete SIG[o.id];updSigBadge();}
  else if(o.t==='node'){renderNode(o);}
+ else if(o.t==='nodedrop'){dropNode(o.id);}
  else if(o.t==='selftest'){let st=document.getElementById('st'+o.mod)||(()=>{
     let d=document.createElement('div');d.id='st'+o.mod;$('#selftest').appendChild(d);return d;})();
     let ok=o.version>0&&o.version<255;
