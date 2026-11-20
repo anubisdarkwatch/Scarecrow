@@ -256,6 +256,29 @@ void viewAction() {                             // long-press action, per view
   }
 }
 
+// Short Darkwatch intro at power-on: radiating RF rings, the crow mark, title,
+// and a heat sweep. Pure eye-candy, ~1.5s, runs once before the HUD comes up.
+void splash() {
+  tft.fillScreen(C_BG);
+  int cx = SW / 2, cy = SH / 2 - 12;
+  for (int rd = 6; rd < 78; rd += 6) {        // radiating "listening" rings
+    tft.drawCircle(cx, cy, rd, rd < 30 ? C_GOLD : C_TEAL);
+    delay(26);
+  }
+  tft.fillCircle(cx - 14, cy, 11, C_TEAL);    // crow mark (scaled up)
+  tft.fillTriangle(cx - 4, cy - 7, cx + 18, cy - 2, cx - 4, cy + 7, C_GOLD);
+  tft.fillCircle(cx - 16, cy - 3, 2, C_BG);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(4); tft.setTextColor(C_INK, C_BG);
+  tft.drawString("SCARECROW", cx, cy + 46);
+  tft.setTextFont(2); tft.setTextColor(C_GOLD, C_BG);
+  tft.drawString("ANUBIS DARKWATCH", cx, cy + 70);
+  for (int x = 0; x < SW; x += 3) {           // heat sweep underline
+    tft.drawFastVLine(x, cy + 86, 2, heat((float)x / SW));
+    delay(3);
+  }
+  delay(650);
+}
 void setup() {
   Serial.begin(115200);
   pinMode(21, OUTPUT); digitalWrite(21, HIGH);
@@ -263,6 +286,7 @@ void setup() {
   pinMode(TOUCH_IRQ, INPUT);
   tft.init(); tft.setRotation(1);
   SW = tft.width(); SH = tft.height();
+  splash();
   tft.fillScreen(C_BG);
   drawHeader(); redraw();
   WiFi.mode(WIFI_STA); WiFi.setSleep(false); WiFi.begin(AP_SSID, AP_PASS);

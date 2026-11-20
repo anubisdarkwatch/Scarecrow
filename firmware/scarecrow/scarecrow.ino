@@ -67,12 +67,16 @@ void IRAM_ATTR onEdge() {
 // ---------------------------------------------------------------------------
 //  Scanner state
 // ---------------------------------------------------------------------------
-int16_t  floorDb[SCAN_PLAN_LEN];             // EWMA noise floor per channel
+int16_t  floorDb[SCAN_PLAN_LEN];             // asymmetric noise floor per channel
 int16_t  lastRssi[SCAN_PLAN_LEN];            // most recent live RSSI per channel
+bool     chBusy[SCAN_PLAN_LEN] = {false};    // hysteretic busy state per channel
 bool     seeded = false;
 uint8_t  jamStreak = 0;
+bool     jamActive = false;                  // currently announcing a jam
+uint32_t lastJamFire = 0;                    // last jam announcement (refire throttle)
+uint32_t lastOccDecay = 0;                   // occupancy-score decay timer
 uint32_t lastReport = 0;
-uint32_t busyAccum[SCAN_PLAN_LEN];           // occupancy counter per channel
+uint32_t busyAccum[SCAN_PLAN_LEN];           // rolling occupancy score per channel (decays)
 uint32_t sweeps = 0;
 
 // ---------------------------------------------------------------------------
@@ -566,33 +570,58 @@ void doSweep() {
     lastRssi[i] = rssi;                         // live value for the dashboard
 
     if (!seeded) { floorDb[i] = rssi; }        // first pass seeds the floor
-    bool busy = (rssi > floorDb[i] + BUSY_MARGIN_DB);
+
+    // Hysteretic busy: cross the margin to go hot, fall well below it to go quiet,
+    // so a signal hovering near threshold doesn't flicker every sweep.
+    int16_t enterLvl = floorDb[i] + BUSY_MARGIN_DB;
+    if (!chBusy[i] && rssi > enterLvl)                     chBusy[i] = true;
+    else if (chBusy[i] && rssi < enterLvl - BUSY_HYST_DB)  chBusy[i] = false;
+    bool busy = chBusy[i];
 
     if (busy) {
       hotThisSweep++;
-      busyAccum[i]++;
+      busyAccum[i] += OCC_HIT;                 // rolling occupancy score (decays elsewhere)
       emit(String("{\"t\":\"busy\",\"mhz\":") + String(SCAN_PLAN[i], 2)
          + ",\"rssi\":" + rssi + ",\"floor\":" + floorDb[i] + "}");
     } else {
-      // only adapt the floor on quiet reads, so a real signal can't drag it up
-      floorDb[i] += (rssi - floorDb[i]) >> FLOOR_EWMA_SHIFT;
+      // Asymmetric floor: drop fast toward a quieter level, creep up slowly, so a
+      // lingering sub-threshold signal can't inflate the floor and blind the channel.
+      int sh = (rssi < floorDb[i]) ? FLOOR_DN_SHIFT : FLOOR_UP_SHIFT;
+      floorDb[i] += (rssi - floorDb[i]) >> sh;
     }
     if (rssi > peak) { peak = rssi; peakCh = i; }
   }
   seeded = true;
   sweeps++;
 
-  // Broadband jam heuristic: many channels hot at once, several sweeps running.
-  if (hotThisSweep >= JAM_MIN_CHANNELS) {
-    if (++jamStreak >= JAM_MIN_SWEEPS) {
-      emit(String("{\"t\":\"alarm\",\"kind\":\"broadband_interference\",")
-         + "\"hot\":" + hotThisSweep + ",\"peak_mhz\":" + String(SCAN_PLAN[peakCh], 2)
-         + ",\"peak_rssi\":" + peak + "}", true);
-      jamStreak = JAM_MIN_SWEEPS;              // latch; keep firing while present
+  // Broadband jam heuristic: many channels hot at once, sustained, AND the hottest
+  // channel actually loud (absolute gate rejects quiet false-hot). Announce once on
+  // onset, re-announce at most every JAM_REFIRE_MS while present, and emit one clear.
+  bool jamNow = (hotThisSweep >= JAM_MIN_CHANNELS) && (peak >= JAM_MIN_PEAK_DBM);
+  if (jamNow) {
+    if (jamStreak < 255) jamStreak++;
+    if (jamStreak >= JAM_MIN_SWEEPS) {
+      uint32_t now = millis();
+      if (!jamActive || now - lastJamFire >= JAM_REFIRE_MS) {
+        jamActive = true; lastJamFire = now;
+        emit(String("{\"t\":\"alarm\",\"kind\":\"broadband_interference\",")
+           + "\"hot\":" + hotThisSweep + ",\"peak_mhz\":" + String(SCAN_PLAN[peakCh], 2)
+           + ",\"peak_rssi\":" + peak + "}", true);
+      }
     }
   } else {
-    jamStreak = 0;
+    if (jamActive) emit("{\"t\":\"alarmclear\"}", true);   // announce the all-clear once
+    jamActive = false; jamStreak = 0;
   }
+}
+
+// Occupancy score decays geometrically so the MONITOR view tracks recent activity,
+// not a lifetime total. ~5 steps per half-life -> halves every OCC_HALFLIFE_MS.
+void occDecay() {
+  uint32_t step = OCC_HALFLIFE_MS / 5;
+  if (millis() - lastOccDecay < step) return;
+  lastOccDecay = millis();
+  for (int i = 0; i < SCAN_PLAN_LEN; i++) busyAccum[i] -= (busyAccum[i] >> 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -682,6 +711,7 @@ void loop() {
   reapBurst();      // non-blocking; drains Module B's ISR buffer
   foxTick();        // fast RSSI on the fox freq -> UI
   maybeReport();
+  occDecay();                                                  // age out occupancy scores
   if (sigsDirty && millis() - lastSigSave > 3000) sigsSave();  // debounced persist
   if (logBuf.length() && millis() - lastLogFlush > 4000) logFlush();  // debounced log flush
 #if USE_DF

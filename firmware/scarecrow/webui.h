@@ -34,6 +34,12 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Scarecrow · Anubis Darkwatch</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath d='M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z' fill='%23e0b84c'/%3E%3Ccircle cx='15' cy='28' r='1.7' fill='%2306070b'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%2306070b'/%3E%3Cpath d='M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z' fill='%23e0b84c'/%3E%3Ccircle cx='15' cy='28' r='1.7' fill='%2306070b'/%3E%3C/svg%3E">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#06070b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Scarecrow">
 <style>
 :root{
  --bg:#06070b; --bg2:#0b0d15; --panel:#0e1018; --panel2:#121521;
@@ -175,6 +181,11 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
  letter-spacing:.04em;transition:.2s}
 .tab.sel .tbadge{background:rgba(224,184,76,.16);color:var(--gold)}
 .tbadge.live{background:rgba(53,214,164,.16);color:var(--ok)}
+.hdrspark{width:100%;height:26px;margin:0 0 12px;background:#05060a;border:1px solid var(--line);
+ border-radius:8px;display:block;box-shadow:inset 0 0 0 1px rgba(255,255,255,.01)}
+@keyframes sigflash{0%{background:rgba(224,184,76,.4)}100%{background:#090b12}}
+.sigrow.flash{animation:sigflash 1.3s ease-out}
+.sigrow{transition:opacity .6s}
 .dot.on{animation:beat 1.8s ease-in-out infinite}
 @keyframes beat{0%,100%{box-shadow:0 0 6px var(--ok)}50%{box-shadow:0 0 14px var(--ok),0 0 22px rgba(53,214,164,.4)}}
 .brand h1{background:linear-gradient(90deg,var(--ink),#c7ccda);-webkit-background-clip:text;background-clip:text}
@@ -227,6 +238,7 @@ th{color:var(--dim);font-weight:400;font-size:11px;letter-spacing:.1em}
   <span>fox <b id="watch">--</b></span>
   <span><span id="sw">0</span> sweeps</span>
  </div>
+ <svg id="spark" class="hdrspark" viewBox="0 0 300 30" preserveAspectRatio="none"></svg>
 
  <div class="tabs">
   <div class="tab sel" data-v="mon">MONITOR</div>
@@ -385,8 +397,20 @@ function foxUpdate(r){
  else if(ewF<ewS-0.8){t.className='trend cold';t.textContent='▼ COLDER ▼';}
  else{t.className='trend hold';t.textContent='— HOLD —';}
  fcount++; if(audioOn)beep(r);
+ pushSpk(r);
 }
 setInterval(()=>{$('#hz').textContent=fcount;fcount=0;},1000);
+// ---- header live-RSSI sparkline (the fox signal, breathing, from any tab) ----
+const SPK=[],SPKMAX=60;
+function pushSpk(r){SPK.push(r);if(SPK.length>SPKMAX)SPK.shift();drawSpark();}
+function drawSpark(){const sv=$('#spark');if(!sv||SPK.length<2)return;
+ const mn=Math.min(...SPK,-110),mx=Math.max(...SPK,-40),rng=(mx-mn)||1;
+ const pts=SPK.map((v,i)=>{const x=i/(SPK.length-1)*300,y=27-((v-mn)/rng)*24;
+  return x.toFixed(1)+','+y.toFixed(1);}).join(' ');
+ const last=SPK[SPK.length-1],lp=Math.max(0,Math.min(1,(last+110)/80));
+ const col=lp>=.72?'var(--hot)':lp>=.45?'var(--gold)':'var(--ok)';
+ sv.innerHTML='<polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="1.5" '
+  +'stroke-linejoin="round"/>';}
 function resetPeak(){peak=-200;$('#peakv').textContent='—';
  $('#peak').setAttribute('cx',24);$('#peak').setAttribute('cy',158);}
 
@@ -420,8 +444,16 @@ function renderSig(d){
   $('#siglist').prepend(row);
   if(s.label)row.querySelector('.siglabel').value=s.label;}
  row.querySelector('.sigmeta').innerHTML=sigMeta(s);
- if(d.isNew)row.querySelector('.signew').style.display='inline';updSigBadge();}
+ s.seen=Date.now()-((d.age||0)*1000);row.style.opacity='1';
+ if(d.isNew){row.querySelector('.signew').style.display='inline';
+  row.classList.remove('flash');void row.offsetWidth;row.classList.add('flash');}
+ updSigBadge();}
 function updSigBadge(){const b=$('#bsig');if(b)b.textContent=Object.keys(SIG).length;}
+// Signatures fade as they go quiet, brighten the instant they're heard again.
+function ageFade(){const now=Date.now();for(const id in SIG){const r=document.getElementById('sig'+id);
+ if(!r)continue;const age=(now-(SIG[id].seen||now))/1000;
+ r.style.opacity=age>180?'0.4':age>45?'0.68':'1';}}
+setInterval(ageFade,4000);
 // ---- signature detail (timeline + RSSI sparkline) ----
 function human(s){s=+s;if(s<90)return s+'s ago';if(s<5400)return Math.round(s/60)+'m ago';
  if(s<172800)return Math.round(s/3600)+'h ago';return Math.round(s/86400)+'d ago';}
@@ -557,7 +589,9 @@ function handle(e){let o;try{o=JSON.parse(e)}catch(_){return}
  else if(o.t==='burst'){add('burst',`burst ${o.mhz}  ${o.edges} edges  ${o.dur_us}us  sig ${o.sig}  ${o.rssi}dBm`);}
  else if(o.t==='alarm'){add('alm',`ALARM ${o.kind}  ${o.hot} hot  peak ${o.peak_mhz} ${o.peak_rssi}dBm`);
    $('#alarm').classList.add('on');clearTimeout(window._at);
-   window._at=setTimeout(()=>$('#alarm').classList.remove('on'),6000);}
+   window._at=setTimeout(()=>$('#alarm').classList.remove('on'),8000);}
+ else if(o.t==='alarmclear'){$('#alarm').classList.remove('on');clearTimeout(window._at);
+   add('k','interference cleared');}
  else if(o.t==='watch'){setWatchUI(o.mhz);}
  else if(o.t==='newsig'){renderSig({id:o.id,te:o.te,nmin:o.edges,nmax:o.edges,count:1,rssi:o.rssi,isNew:true});
    toast('NEW signal · te '+o.te+'µs');}
@@ -612,6 +646,14 @@ inline void webSetup() {
   });
   server.on("/state.json", HTTP_GET, [](AsyncWebServerRequest *r){
     r->send(200, "application/json", buildStateJson());
+  });
+  server.on("/manifest.webmanifest", HTTP_GET, [](AsyncWebServerRequest *r){
+    r->send(200, "application/manifest+json",
+      "{\"name\":\"Scarecrow \xC2\xB7 Anubis Darkwatch\",\"short_name\":\"Scarecrow\","
+      "\"start_url\":\"/\",\"display\":\"standalone\",\"orientation\":\"portrait\","
+      "\"background_color\":\"#06070b\",\"theme_color\":\"#06070b\",\"icons\":[{"
+      "\"src\":\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='10' fill='%2306070b'/%3E%3Cpath d='M7 31c0-7 5-12 12-13l11-3c1 0 2 1 1 2l-4 5 3 1c1 0 1 2 0 2l-6 2c-1 5-5 9-11 9-4 0-7-2-7-4z' fill='%23e0b84c'/%3E%3Ccircle cx='15' cy='28' r='1.7' fill='%2306070b'/%3E%3C/svg%3E\","
+      "\"sizes\":\"any\",\"type\":\"image/svg+xml\",\"purpose\":\"any\"}]}");
   });
   server.on("/fox", HTTP_GET, [](AsyncWebServerRequest *r){
     if (r->hasParam("mhz")) setWatchFreq(r->getParam("mhz")->value().toFloat());
