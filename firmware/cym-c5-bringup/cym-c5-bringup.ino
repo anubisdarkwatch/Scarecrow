@@ -53,6 +53,18 @@ int16_t rssi = -120;
 volatile uint32_t edges = 0, lastEdgeUs = 0;
 void IRAM_ATTR onEdge() { edges++; lastEdgeUs = micros(); }
 
+bool radioInit() {                 // (re)bring up the CC1101 — retried live so you
+  radioRC = radio.begin(WATCH_MHZ);// can flip DIP#1 and watch it come alive
+  if (radioRC != RADIOLIB_ERR_NONE) return false;
+  radio.setOOK(true);
+  radio.setRxBandwidth((float)RX_BW_KHZ);
+  radio.setFrequencyDeviation(5.2);
+  radio.receiveDirectAsync();
+  pinMode(CC_GDO0, INPUT);
+  attachInterrupt(digitalPinToInterrupt(CC_GDO0), onEdge, CHANGE);
+  return true;
+}
+
 // ---- Darkwatch palette (RGB565) --------------------------------------------
 #define C_BG    0x0841
 #define C_INK   0xE73C
@@ -135,15 +147,7 @@ void setup() {
   gfx->invertDisplay(scrInv);
   splash();
 
-  radioRC = radio.begin(WATCH_MHZ);                    // CC1101 on the shared bus
-  radio.setOOK(true);
-  radio.setRxBandwidth((float)RX_BW_KHZ);
-  radio.setFrequencyDeviation(5.2);
-  radio.receiveDirectAsync();
-  ver = (radioRC == RADIOLIB_ERR_NONE) ? 0x14 : 0;
-
-  pinMode(CC_GDO0, INPUT);
-  attachInterrupt(digitalPinToInterrupt(CC_GDO0), onEdge, CHANGE);
+  ver = radioInit() ? 0x14 : 0;                        // CC1101 on the shared bus
 
   Serial.printf("# C5 bring-up: display OK, cc1101 rc=%d ver=0x%02X\n", radioRC, ver);
   drawStatic(); drawDynamic();
@@ -164,10 +168,17 @@ void loop() {
   }
   bPrev = bNow;
 
+  // keep trying the CC1101 until it answers (flip DIP#1 and watch it go green)
+  static uint32_t tR = 0;
+  if (ver != 0x14 && millis() - tR > 1000) {
+    tR = millis();
+    if (radioInit()) { ver = 0x14; drawStatic(); }
+  }
+
   static uint32_t t = 0;
   if (millis() - t > 300) {
     t = millis();
-    rssi = (int16_t)lroundf(radio.getRSSI());
+    if (ver == 0x14) rssi = (int16_t)lroundf(radio.getRSSI());
     drawDynamic();                 // only the changing fields -> no flicker
   }
 }
