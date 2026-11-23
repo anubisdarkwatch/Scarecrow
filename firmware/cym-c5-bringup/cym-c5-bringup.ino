@@ -22,6 +22,12 @@
 #include <SPI.h>
 #include <Arduino_GFX_Library.h>
 #include <RadioLib.h>
+#include <Preferences.h>
+
+#define BOOT_BTN 0                 // tap = rotate screen, hold = invert colors (saved)
+Preferences prefs;
+uint8_t scrRot = 0;
+bool    scrInv = true;             // IPS panels usually want inversion on
 
 // ---- shared SPI bus + display ----------------------------------------------
 #define PIN_SCK  6
@@ -103,6 +109,7 @@ void draw() {
   ctext("dBm RSSI", y + 70, C_DIM, 1);
 
   ltext("RX-ONLY", 8, H() - 16, C_OK, 1);
+  ltext("BOOT tap:rotate  hold:invert", 8, H() - 32, C_DIM, 1);
 }
 
 void setup() {
@@ -110,7 +117,13 @@ void setup() {
   pinMode(CC_CS, OUTPUT); digitalWrite(CC_CS, HIGH);   // park radio CS
   pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH); // backlight on (GPIO25)
 
+  pinMode(BOOT_BTN, INPUT_PULLUP);
+  prefs.begin("c5", false);
+  scrRot = prefs.getUChar("rot", 0);
+  scrInv = prefs.getUChar("inv", 1);
   gfx->begin(40000000);                                // inits shared SPI + panel
+  gfx->setRotation(scrRot);
+  gfx->invertDisplay(scrInv);
   splash();
 
   radioRC = radio.begin(WATCH_MHZ);                    // CC1101 on the shared bus
@@ -128,6 +141,20 @@ void setup() {
 }
 
 void loop() {
+  // BOOT button: tap = cycle rotation, hold (>800ms) = toggle invert — saved
+  static bool bPrev = false; static uint32_t bT0 = 0; static bool bLong = false;
+  bool bNow = (digitalRead(BOOT_BTN) == LOW);
+  if (bNow && !bPrev) { bT0 = millis(); bLong = false; }
+  if (bNow && !bLong && millis() - bT0 > 800) {
+    bLong = true; scrInv = !scrInv; gfx->invertDisplay(scrInv);
+    prefs.putUChar("inv", scrInv); draw();
+  }
+  if (!bNow && bPrev && !bLong) {
+    scrRot = (scrRot + 1) & 3; gfx->setRotation(scrRot);
+    prefs.putUChar("rot", scrRot); draw();
+  }
+  bPrev = bNow;
+
   static uint32_t t = 0;
   if (millis() - t > 250) {
     t = millis();
