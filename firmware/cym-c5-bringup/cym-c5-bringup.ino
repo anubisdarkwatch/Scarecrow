@@ -24,7 +24,7 @@
 #include <RadioLib.h>
 #include <Preferences.h>
 
-#define BOOT_BTN 0                 // tap = rotate screen, hold = invert colors (saved)
+#define BOOT_BTN 28                // NM-CYD-C5 BOOT button is GPIO28 (per CYM board header)
 Preferences prefs;
 uint8_t scrRot = 0;
 bool    scrInv = true;             // IPS panels usually want inversion on
@@ -90,26 +90,35 @@ void splash() {
   delay(800);
 }
 
-void draw() {
+int yEdges = 0, yRssi = 0;          // dynamic-field anchors (set by drawStatic)
+
+// Full layout — drawn once (boot, rotate, invert). No per-frame full clears.
+void drawStatic() {
   gfx->fillScreen(C_BG);
   ltext("SCARECROW", 8, 8, C_ACC, 2);
   ltext("DARKWATCH", 8, 26, C_GOLD, 1);
   gfx->drawFastHLine(0, 42, W(), C_DIM);
 
-  int y = 54;
+  int y = 54; char l[40];
   ltext("display ST7789 240x320 OK", 8, y, C_INK, 1); y += 20;
-  char l[40];
   snprintf(l, sizeof(l), "cc1101  ver 0x%02X %s", ver, ver == 0x14 ? "OK" : "- DIP1?");
   ltext(l, 8, y, ver == 0x14 ? C_OK : C_HOT, 1); y += 20;
   snprintf(l, sizeof(l), "band    %.2f MHz", WATCH_MHZ); ltext(l, 8, y, C_INK, 1); y += 20;
-  snprintf(l, sizeof(l), "gdo0 edges %lu", (unsigned long)edges); ltext(l, 8, y, C_INK, 1); y += 28;
+  ltext("gdo0 edges", 8, y, C_INK, 1); yEdges = y; y += 28;
+  yRssi = y;
+  ltext("dBm RSSI", 8, yRssi + 50, C_DIM, 1);
 
-  snprintf(l, sizeof(l), "%d", rssi);
-  ctext(l, y + 20, rssi > -75 ? C_OK : C_INK, 5);
-  ctext("dBm RSSI", y + 70, C_DIM, 1);
-
+  ltext("BOOT tap:rotate  hold:invert", 8, H() - 30, C_DIM, 1);
   ltext("RX-ONLY", 8, H() - 16, C_OK, 1);
-  ltext("BOOT tap:rotate  hold:invert", 8, H() - 32, C_DIM, 1);
+}
+
+// Only the two changing fields — tiny region repaints, no flicker.
+void drawDynamic() {
+  char l[20];
+  gfx->fillRect(95, yEdges, W() - 100, 8, C_BG);
+  snprintf(l, sizeof(l), "%lu", (unsigned long)edges); ltext(l, 97, yEdges, C_INK, 1);
+  gfx->fillRect(0, yRssi, W(), 44, C_BG);
+  snprintf(l, sizeof(l), "%d", rssi); ctext(l, yRssi + 18, rssi > -75 ? C_OK : C_INK, 5);
 }
 
 void setup() {
@@ -137,7 +146,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(CC_GDO0), onEdge, CHANGE);
 
   Serial.printf("# C5 bring-up: display OK, cc1101 rc=%d ver=0x%02X\n", radioRC, ver);
-  draw();
+  drawStatic(); drawDynamic();
 }
 
 void loop() {
@@ -147,18 +156,18 @@ void loop() {
   if (bNow && !bPrev) { bT0 = millis(); bLong = false; }
   if (bNow && !bLong && millis() - bT0 > 800) {
     bLong = true; scrInv = !scrInv; gfx->invertDisplay(scrInv);
-    prefs.putUChar("inv", scrInv); draw();
+    prefs.putUChar("inv", scrInv); drawStatic(); drawDynamic();
   }
   if (!bNow && bPrev && !bLong) {
     scrRot = (scrRot + 1) & 3; gfx->setRotation(scrRot);
-    prefs.putUChar("rot", scrRot); draw();
+    prefs.putUChar("rot", scrRot); drawStatic(); drawDynamic();
   }
   bPrev = bNow;
 
   static uint32_t t = 0;
-  if (millis() - t > 250) {
+  if (millis() - t > 300) {
     t = millis();
     rssi = (int16_t)lroundf(radio.getRSSI());
-    draw();
+    drawDynamic();                 // only the changing fields -> no flicker
   }
 }
